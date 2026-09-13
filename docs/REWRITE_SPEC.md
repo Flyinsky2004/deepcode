@@ -67,7 +67,14 @@
 
 "复刻"在这里意味着一份**行为等价**的实现，具体包括：
 
-1. **数据兼容**：能读旧项目写的 `~/.flyinchat/config.json` 和 `<workspace>/.flyinchat/chat.json`，字段名与语义一致。
+1. **数据兼容**：能读旧项目写的 `<config.json>` 和 `<workspace>/chat.json`，字段名与语义一致。
+
+   > **本实现的有意偏离（2026-09-14）**：目录名改用 `.deepcode` 而非 `.flyinchat`，
+   > 即 `~/.deepcode/config.json` 与 `<workspace>/.deepcode/chat.json`。
+   > 本项约束的是**文件内部结构**（字段名、语义、schema version），不是目录名——
+   > 那部分仍逐字兼容。把旧文件整体复制到 `.deepcode/` 即可直接读取。
+   > 理由与验收影响见 `docs/adr/0001-engineering-stack.md` 决策 7。
+   > 下文所有 `~/.flyinchat/...` 形式的路径均应理解为 `.deepcode` 下的对应文件。
 2. **协议兼容**：对 provider 的请求/响应处理产生相同的归一化事件流。
 3. **提示词一致**：送给模型的 system prompt、工具 description、工具 input schema 文本一致（这些直接决定模型行为）。
 4. **权限语义一致**：四种模式下每个工具的 auto-allow / ask / deny 判定完全一致。

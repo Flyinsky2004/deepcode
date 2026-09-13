@@ -1,0 +1,46 @@
+{
+  "name": "deepcode",
+  "version": "0.0.0",
+  "private": true,
+  "description": "跨客户端、跨模型的本地 Agent runtime（Anthropic Messages API only）",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test"
+  },
+  "dependencies": {
+    "zod": "^4.6.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.5.1",
+    "@vitest/coverage-v8": "^5.0.0",
+    "eslint": "^10.10.0",
+    "prettier": "^3.9.6",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.0"
+  }
+}

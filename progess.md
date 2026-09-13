@@ -8,7 +8,7 @@
 - [x] 增加跨实现 Agent 标准
 - [x] 增加 Web UI 启动、监听和安全规范
 - [x] 增加 Anthropic-only provider、模型档位和 `/workwith` 规范
-- [ ] 建立 TypeScript 工程骨架
+- [~] 建立 TypeScript 工程骨架（工程配置、目录、`src/core` 基础契约已完成；接口与模型定义进行中）
 - [ ] 实现运行时核心
 - [ ] 实现模型、工具、权限和持久化
 - [ ] 实现 TUI / Web UI
@@ -32,18 +32,25 @@
 
 ### 工作项
 
-- [ ] 配置 TypeScript、ESM/CJS 策略、lint、format、test、build
-- [ ] 建立 `src/core`、`src/storage`、`src/providers`、`src/tools`、`src/skills`、`src/subagents`、`src/mcp`、`src/clients`
-- [ ] 定义 ID、时间、错误码、事件、结果和 schema 工具
-- [ ] 定义 `ModelProvider`、`Tool`、`EventSink`、`ApprovalService`
-- [ ] 定义 `Session`、`Turn`、`Message`、`WorkingMemory`、`AgentBudget`
-- [ ] 所有外部输入使用 runtime schema 校验（推荐 Zod 或等价方案）
+- [x] 配置 TypeScript、ESM/CJS 策略、lint、format、test、build（纯 ESM + Vitest + pnpm；选型理由见 `docs/adr/0001-engineering-stack.md`）
+- [x] 建立 `src/core`（其余目录按 Phase 顺序落地，见 README 目录结构说明）
+- [x] 定义 ID、时间、错误码、事件、结果和 schema 工具
+- [x] 定义 `ModelProvider`、`Tool`、`EventSink`、`ApprovalService`
+- [x] 定义 `Session`、`Turn`、`Message`、`WorkingMemory`、`AgentBudget`
+      （`Conversation` / `TurnResult` / `ContextEnvelope` 一并冻结；契约决策见 `docs/adr/0002-core-contracts.md`）
+- [x] 所有外部输入使用 runtime schema 校验（Zod；读入容错策略见 `src/core/schema.ts`）
 
 ### 验收
 
-- `npm test` 可运行
-- 不依赖 TUI 即可 import runtime
-- 所有公共协议都有单元测试和序列化测试
+以下三项均已由 `tests/acceptance/phase0.test.ts` 写成可执行断言（`pnpm check` 会跑）：
+
+- [x] `npm test` 可运行（`pnpm test` 与 `npm test` 均已验证；`pnpm check` 另含 typecheck/lint/format）
+- [x] 不依赖 TUI 即可 import runtime（静态扫描 import + 真实 import 双重验证；
+      探针实测：注入 `node:fs` 依赖后该验收项会失败）
+- [x] 所有公共协议都有单元测试和序列化测试（15/15 模块有同名测试文件；
+      往返测试见 `tests/core/serialization.test.ts`）
+
+当前规模：17 个测试文件、247 个测试、覆盖率 95.8%（语句）/ 91.1%（分支）。
 
 ## Phase 1：存储、事件和恢复
 

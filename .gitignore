@@ -1,1 +1,21 @@
 .DS_Store
+
+# 依赖与构建产物
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# 日志与本地环境
+*.log
+.env
+.env.*
+!.env.example
+
+# 编辑器
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# oh-my-claudecode 会话状态（工具状态，非项目内容）
+.omc/

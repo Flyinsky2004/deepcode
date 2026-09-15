@@ -22,6 +22,7 @@
  * 永远不触发的恢复路径只会增加状态机复杂度而不带来任何能力。
  */
 
+import { DEFAULT_REASONING_EFFORT, isReasoningEffort, type ReasoningEffort } from './models.js'
 import { type ToolDescriptor } from './tool.js'
 
 // ── 模型与供应商配置 ──────────────────────────────────────────────
@@ -143,6 +144,100 @@ export interface ThinkingConfig {
   readonly type: 'enabled'
   /** 思考预算 token 数。必须小于 `maxTokens`。 */
   readonly budgetTokens: number
+}
+
+/**
+ * 推理强度 → 思考预算的折算表。
+ *
+ * ⚠️ **这是新增协议，没有旧实现可转录**。旧项目的 Anthropic 请求体里
+ * `thinking` 只有 `{"type": "enabled"}` 一个键（`api_client.py:383`），从不发
+ * `budget_tokens`；`reasoning_effort` 字段只有 OpenAI 分支读（`parts/03` §2.1）。
+ * 而官方 Anthropic 要求 `budget_tokens` 必填且 `max_tokens > budget_tokens`
+ * ——`parts/03` 因此明确要求「对接官方 Anthropic API 时必须补 `budget_tokens`，
+ * 复刻时请把这个差异显式标注」。
+ *
+ * 取值贴近官方常见区间（官方上限 64k），是**策略选择**而非转录结果；
+ * 依据与取舍见 `docs/adr/0004-thinking-effort-and-model-commands.md`。
+ */
+export const THINKING_BUDGET_BY_EFFORT: Readonly<Record<ReasoningEffort, number>> = {
+  low: 4_000,
+  medium: 12_000,
+  high: 24_000,
+  /**
+   * `/effort` 的第四档（旧 `/reasoning` 菜单里没有它）。
+   *
+   * 同样取 48k：官方上限附近，但仍留出足够输出空间。
+   */
+  xhigh: 48_000,
+}
+
+/**
+ * 为思考预留的最小输出空间。
+ *
+ * Anthropic 要求 `max_tokens > budget_tokens`——思考预算不能把输出额度吃光，
+ * 否则模型思考完就没有配额说话了。折算时从这个余量往下压预算。
+ */
+export const THINKING_MIN_OUTPUT_RESERVE = 1_024
+
+/**
+ * `budget_tokens` 的**官方下限**。
+ *
+ * 官方文档写的是两条约束，不是一条：**最小 1024**，且必须小于 `max_tokens`
+ * （「Minimum of 1,024 tokens. The API rejects smaller values.」）。
+ *
+ * ⚠️ 早先这里只保证了后者（下界取 1）。后果是 `maxOutputTokens` 在
+ * 1025..2047 之间的模型会发出 `budget_tokens: 1000` 之类的值——**必然被
+ * endpoint 拒绝**，而这恰恰是 D1 要修的那件事（旧实现因为不发 budget_tokens
+ * 而对接不上官方 API）。压低到一个必然被拒的值，等于把"缺字段"换成"字段非法"。
+ *
+ * 压不到这个下限时**不发** `thinking`（返回 `undefined`），而不是发一个非法值：
+ * 与 §9.2「不能静默降级」同源——宁可让这一轮没有思考，也不发一个 400。
+ */
+export const THINKING_MIN_BUDGET_TOKENS = 1_024
+
+/**
+ * 把一个 `ModelProfile` 的运行偏好折算成请求里的 `thinking` 字段。
+ *
+ * 返回 `undefined` 表示**不发** `thinking` 字段，三种情形：
+ *
+ * 1. `thinkingEnabled !== true`——缺省即关闭（见 ADR 0004 D3）。
+ *    这里与旧实现的 `thinking_enabled` 默认 `True` **有意不同**：本项目
+ *    `supportsThinking` 的缺省是 `false`，沿用旧默认会让默认配置发出模型
+ *    根本没声明的能力请求；TUI 状态栏也一直把缺省渲染成 OFF。
+ * 2. `maxTokens` 不是有限正数——配置被手改坏时（`asNum` 只校验
+ *    `Number.isFinite`，见 `config-store.ts`）不能把 `NaN` 传出去。
+ * 3. 折算出的预算压不到官方下限 `THINKING_MIN_BUDGET_TOKENS`——
+ *    `maxOutputTokens` 太小时无解，见该常量的说明。
+ *
+ * 成功时保证 `THINKING_MIN_BUDGET_TOKENS <= budgetTokens < maxTokens`
+ * 且 `budgetTokens` 为整数——两条都是 endpoint 的硬性要求。
+ *
+ * 纯函数、无 IO，runtime 与命令层共用，避免两处各算一遍而漂移。
+ */
+export function thinkingConfigFor(
+  profile: Pick<ModelProfile, 'thinkingEnabled' | 'reasoningEffort'>,
+  maxTokens: number,
+): ThinkingConfig | undefined {
+  if (profile.thinkingEnabled !== true) return undefined
+  if (!Number.isFinite(maxTokens)) return undefined
+  // 取整：`maxOutputTokens` 只由 `upsertModelProfile` 保证是安全整数，
+  // 而手改 `config.json`（ADR 0004 D10 明确引导用户这么做）可以写小数，
+  // 归一化不会拦它。
+  const budgetable = Math.floor(maxTokens)
+  if (budgetable <= 0) return undefined
+
+  const effort = isReasoningEffort(profile.reasoningEffort)
+    ? profile.reasoningEffort
+    : DEFAULT_REASONING_EFFORT
+  const desired = THINKING_BUDGET_BY_EFFORT[effort]
+
+  // 余量取 `clamp(⌊maxTokens/2⌋, 1, 1024)`：`maxTokens` 小（<2048）时余量按比例
+  // 收缩，别把窗口吃光；下界 1 保证 `budgetTokens < maxTokens` 严格成立
+  //（少了它 `maxTokens = 1` 会算出 `budgetTokens = 1`，恰好让
+  // `maxTokens > budgetTokens` 不成立，到发请求时才炸）。
+  const reserve = Math.max(1, Math.min(THINKING_MIN_OUTPUT_RESERVE, Math.floor(budgetable / 2)))
+  const budgetTokens = Math.min(desired, budgetable - reserve)
+  return budgetTokens >= THINKING_MIN_BUDGET_TOKENS ? { type: 'enabled', budgetTokens } : undefined
 }
 
 /**

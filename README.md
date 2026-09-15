@@ -2,8 +2,10 @@
 
 跨客户端、跨模型的本地 Agent runtime。TypeScript 实现。
 
-> **当前状态：运行时核心阶段（Phase 1–5）已实现；全量覆盖率门槛与真实 endpoint 验收待补。**
-> 已具备本地存储/恢复、Anthropic 流式 provider、turn 主循环、统一权限工具链和结构化上下文压缩；TUI/Web UI、Skill、Sub-agent、MCP 仍按进度表排期。
+> **当前状态：Phase 0–7 已实现；Skill、Sub-agent、MCP（Phase 8–10）仍按进度表排期。**
+> 已具备本地存储/恢复、Anthropic 流式 provider、turn 主循环、统一权限工具链、结构化上下文压缩、
+> slash command 层与三端（TUI / Web UI / CLI）共用的 `AgentApplication`。
+> 真实 Anthropic endpoint 的连通验收仍需用户凭据（Phase 2 的验收项）。
 
 ## 这是什么
 

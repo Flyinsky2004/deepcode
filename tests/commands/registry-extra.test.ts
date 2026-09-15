@@ -65,6 +65,13 @@ class FakeHost implements CommandHost {
   updateModelPreferences(): Promise<void> {
     return Promise.resolve()
   }
+  // 同 registry.test.ts：本文件只测管线分支，不该碰到这两条领域动作。
+  assignTierModel(): Promise<void> {
+    throw new Error('registry-extra.test.ts 的用例不应写档位模型')
+  }
+  setModelContextWindow(): Promise<void> {
+    throw new Error('registry-extra.test.ts 的用例不应改上下文窗口')
+  }
   publish(input: { type: string; data: unknown }): Promise<void> {
     if (this.failPublish) return Promise.reject(new Error('事件写入失败'))
     this.published.push({ type: input.type, data: input.data })

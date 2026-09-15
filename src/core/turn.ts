@@ -293,6 +293,7 @@ export const RuntimeEventType = {
   PERMISSION_REQUIRED: 'permission_required',
   USER_INPUT_REQUIRED: 'user_input_required',
   TURN_END: 'turn_end',
+  MODEL_ROUTE_CHANGED: 'model_route_changed',
   ERROR: 'error',
 } as const
 
@@ -454,6 +455,42 @@ export interface TurnEndEvent extends TurnEventBase {
 }
 
 /**
+ * 本 turn 实际使用的模型与路由预期不同。
+ *
+ * 两种触发情形（`parts/09` §9.4 的路由顺序把两者都算作 route change）：
+ *
+ * 1. **显式 override 生效**——`/workwith` 指定的模型覆盖了档位分配；
+ * 2. **fallback 换候选**——首选模型连接失败 / 429 / 暂时性 5xx，路由滑到
+ *    候选列表的下一个。
+ *
+ * 为什么必须发这个事件：`parts/09` §6.1 要求「模型引用、路由决策、能力校验和
+ * 最终使用的模型写入审计事件」，§9.5 要求「切换模型后必须重新构建请求并写
+ * `model_route_changed` 事件」。没有它，用户看到的「本次任务使用 A/B」与
+ * **真正跑完这次任务的模型**可以是两个东西，而界面上无从分辨。
+ *
+ * ⚠️ 本事件是 ADR 0002 §3 冻结的 13 种事件之外**新增**的一种（见 ADR 0004 D8）。
+ * 它是**通知类**事件，不是终止信号——`isTerminalEvent()` 不认它。
+ */
+export interface ModelRouteChangedEvent extends TurnEventBase {
+  readonly type: typeof RuntimeEventType.MODEL_ROUTE_CHANGED
+  readonly data: {
+    /** 变更前路由指向的 provider/model。turn 起点还没有前值时为空串。 */
+    readonly from_provider: string
+    readonly from_model: string
+    readonly to_provider: string
+    readonly to_model: string
+    /** 本次调用所属档位。 */
+    readonly tier: string
+    /** `override` 生效 / `fallback` 换候选。 */
+    readonly reason: 'override' | 'fallback'
+    /** 触发 fallback 的稳定错误码；override 生效时为空串。 */
+    readonly error_code: string
+    /** `override` 生效时对应的 `/workwith` 覆盖 id；否则为空串。 */
+    readonly override_id: string
+  }
+}
+
+/**
  * 错误。**可能在没有 `turn_end` 的情况下单独出现**。
  *
  * ⚠️ **turn 之内的失败本实现不发这个事件**——它们统一走
@@ -482,6 +519,7 @@ export type TurnStreamEvent =
   | PermissionRequiredEvent
   | UserInputRequiredEvent
   | TurnEndEvent
+  | ModelRouteChangedEvent
   | ErrorEvent
 
 /**

@@ -377,8 +377,20 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 128_000
 /** 默认推理强度档位。 */
 export const DEFAULT_REASONING_EFFORT = 'high'
 
-/** 合法的推理强度取值。 */
-export const REASONING_EFFORTS = ['low', 'medium', 'high'] as const
+/**
+ * 合法的推理强度取值。
+ *
+ * `xhigh` 是**修正**的结果，不是凭空加的档位：旧实现的 `/effort` 菜单
+ * （`app.py:192-199` 的 `_get_effort_levels`）提供 low/medium/high/**xhigh** 四项，
+ * 但落盘校验 `set_model_reasoning_effort`（`storage.py:295-298`）只接受前三项并抛
+ * `ValueError`；`_set_effort`（`app.py:1981-2007`）没有 try/except，于是选 xhigh 会
+ * 先写成功 `thinking_enabled=True`、再在校验上炸掉——**配置被半写**。
+ *
+ * 两个值域本来就不一致（`/reasoning` 只提供前三项），本实现的选择是：
+ * 把 `xhigh` 提升为**合法可落盘**的值，让 `/effort` 的菜单项不再是死路；
+ * `/reasoning` 仍然只提供 low/medium/high（对齐旧菜单）。详见 ADR 0004。
+ */
+export const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const
 
 /** 推理强度类型。 */
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number]

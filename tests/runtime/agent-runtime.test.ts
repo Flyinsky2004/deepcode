@@ -29,6 +29,7 @@ import { AgentError, ErrorCode } from '../../src/core/errors.js'
 import { EMPTY_WORKING_MEMORY } from '../../src/core/context.js'
 import {
   ModelEventType,
+  ModelTier,
   type ModelProvider,
   type ModelRequest,
   type ModelStream,
@@ -1718,5 +1719,588 @@ describe('runTurn 外层异常兜底', () => {
     expect(result.error).toBe('budget exceeded: wallTime')
     const stored = (await h.store.read()).runtime.turns[0]
     expect(stored?.phase).toBe(TurnPhase.BUDGET_EXCEEDED)
+  })
+})
+
+// ── 思考配置的消费与路由变更事件 ───────────────────────────────────
+
+/**
+ * `ModelRequest.thinking` 的产出与 `model_route_changed` 的发射。
+ *
+ * 这一段钉住 Phase 6 收尾时打通的那条链路：命令层写进 `ModelProfile` 的
+ * 运行偏好，必须**真的**变成请求体里的 `thinking` 字段。此前它只被 TUI 状态栏
+ * 读来显示，写配置不产生任何行为变化——那正是 `/thinking` 等四条命令
+ * 此前只能"诚实降级"的原因。
+ */
+describe('思考配置的消费', () => {
+  const profile = (
+    id: string,
+    over: Partial<ConfigDocument['model_profiles'][number]> = {},
+  ): ConfigDocument['model_profiles'][number] => ({
+    id,
+    providerId: 'p1',
+    contextWindow: 100_000,
+    maxOutputTokens: 64_000,
+    supportsThinking: true,
+    supportsTools: true,
+    supportsVision: false,
+    supports1MContext: false,
+    enabled: true,
+    ...over,
+  })
+
+  const configFor = (
+    profiles: readonly ConfigDocument['model_profiles'][number][],
+  ): ConfigDocument => ({
+    schema_version: 1,
+    llm_channels: [],
+    llm_models: [],
+    app_settings: {},
+    providers: [
+      {
+        id: 'p1',
+        name: 'p1',
+        baseUrl: 'https://api.example.invalid',
+        apiKeyRef: { source: 'env', key: 'K' },
+        createdAt: '',
+        updatedAt: '',
+        enabled: true,
+      },
+    ],
+    model_profiles: profiles,
+    tier_assignments: [
+      {
+        tier: 'implementation',
+        modelRef: { providerId: 'p1', modelId: profiles[0]!.id },
+        enabled: true,
+        fallbackModelRefs: [],
+      },
+    ],
+  })
+
+  /** 跑一轮并把 provider 收到的请求交出来。 */
+  const runOnce = async (doc: ConfigDocument, override?: unknown) => {
+    const script = scriptedProvider({ events: [text('done')] })
+    const h = await harness({
+      router: new ModelRouter(doc),
+      providerFactory: () => script.provider,
+    })
+    await h.runtime.submitMessage(h.conversation.id, 'go', undefined, override as never)
+    return { request: script.requests[0]!, h }
+  }
+
+  it('缺省（从未设置）即关闭：请求里没有 thinking 字段', async () => {
+    // ADR 0004 D3：与旧实现 thinking_enabled 默认 True 有意不同。
+    // 不发明一个模型没声明的能力请求。
+    const { request } = await runOnce(configFor([profile('m1')]))
+    expect(request.thinking).toBeUndefined()
+    expect('thinking' in request).toBe(false)
+  })
+
+  it('显式打开后，折算出的 budgetTokens 进入请求体', async () => {
+    const { request } = await runOnce(
+      configFor([profile('m1', { thinkingEnabled: true, reasoningEffort: 'medium' })]),
+    )
+    expect(request.thinking).toEqual({ type: 'enabled', budgetTokens: 12_000 })
+    // Anthropic 的硬性约束，provider 层也会断言一次
+    expect(request.maxTokens).toBeGreaterThan(request.thinking!.budgetTokens)
+  })
+
+  it('思考预算受 maxOutputTokens 约束，不会把输出额度吃光', async () => {
+    const { request } = await runOnce(
+      configFor([
+        profile('m1', {
+          thinkingEnabled: true,
+          reasoningEffort: 'xhigh',
+          maxOutputTokens: 10_000,
+        }),
+      ]),
+    )
+    expect(request.maxTokens).toBe(10_000)
+    expect(request.thinking).toEqual({ type: 'enabled', budgetTokens: 10_000 - 1_024 })
+  })
+
+  it('显式关闭时不发 thinking，即使强度还留在配置里', async () => {
+    const { request } = await runOnce(
+      configFor([profile('m1', { thinkingEnabled: false, reasoningEffort: 'high' })]),
+    )
+    expect(request.thinking).toBeUndefined()
+  })
+
+  it('恢复的 turn 用**快照里**的模型资料，中途改配置不影响它', async () => {
+    // parts/09 §9.1：「每个 turn 开始时保存 providerId、模型 id、能力快照……」
+    // 恢复路径读的是 `persisted.routeSnapshot.model`，所以快照里的
+    // thinkingEnabled 说了算，而不是磁盘上最新的那份配置。
+    const snapshotProfile = profile('m1', { thinkingEnabled: true, reasoningEffort: 'high' })
+    const script = scriptedProvider({ events: [text('resumed')] })
+    const h = await harness({
+      // 磁盘上的配置已经把思考关掉了
+      router: new ModelRouter(configFor([profile('m1', { thinkingEnabled: false })])),
+      providerFactory: () => script.provider,
+    })
+    const turn = await seedTurn(h.store, h.conversation.id, TurnPhase.CALLING_MODEL, {
+      routeSnapshot: {
+        provider: {
+          id: 'p1',
+          name: 'p1',
+          baseUrl: 'https://api.example.invalid',
+          apiKeyRef: { source: 'env', key: 'K' },
+          createdAt: '',
+          updatedAt: '',
+        },
+        model: snapshotProfile,
+        tier: ModelTier.IMPLEMENTATION,
+      },
+    })
+
+    await h.runtime.resumeTurn(h.conversation.id, turn.turnId as TurnId)
+
+    expect(script.requests[0]?.thinking).toEqual({ type: 'enabled', budgetTokens: 24_000 })
+  })
+})
+
+describe('model_route_changed 事件', () => {
+  const provider = (id: string): ConfigDocument['providers'][number] => ({
+    id,
+    name: id,
+    baseUrl: 'https://api.example.invalid',
+    apiKeyRef: { source: 'env', key: 'K' },
+    createdAt: '',
+    updatedAt: '',
+    enabled: true,
+  })
+
+  const profile = (id: string, providerId: string): ConfigDocument['model_profiles'][number] => ({
+    id,
+    providerId,
+    contextWindow: 100_000,
+    maxOutputTokens: 1_000,
+    supportsThinking: false,
+    supportsTools: true,
+    supportsVision: false,
+    supports1MContext: false,
+    enabled: true,
+  })
+
+  const twoModelConfig = (): ConfigDocument => ({
+    schema_version: 1,
+    llm_channels: [],
+    llm_models: [],
+    app_settings: {},
+    providers: [provider('p1'), provider('p2')],
+    model_profiles: [profile('m1', 'p1'), profile('m2', 'p2')],
+    tier_assignments: [
+      {
+        tier: 'implementation',
+        modelRef: { providerId: 'p1', modelId: 'm1' },
+        enabled: true,
+        fallbackModelRefs: [{ providerId: 'p2', modelId: 'm2' }],
+      },
+    ],
+  })
+
+  const changedEvents = (h: { events: () => readonly TurnStreamEvent[] }) =>
+    h.events().filter((e) => e.type === 'model_route_changed')
+
+  it('没有 override、首选模型可用时不发事件（路由没有变化）', async () => {
+    const script = scriptedProvider({ events: [text('ok')] })
+    const h = await harness({
+      router: new ModelRouter(twoModelConfig()),
+      providerFactory: () => script.provider,
+    })
+    await h.runtime.submitMessage(h.conversation.id, 'go')
+    expect(changedEvents(h)).toHaveLength(0)
+  })
+
+  it('显式 override 生效时发出事件，from 是"原本会用的档位模型"', async () => {
+    // parts/09 §6.1 要求模型引用与路由决策写入审计事件：用户指定了 B，
+    // 就必须能从事件里看出这次**没有**用档位分配的 A。
+    const script = scriptedProvider({ events: [text('ok')] })
+    const h = await harness({
+      router: new ModelRouter(twoModelConfig()),
+      providerFactory: () => script.provider,
+    })
+    await h.runtime.submitMessage(h.conversation.id, 'go', undefined, {
+      overrideId: 'ov_1',
+      scope: 'next-turn',
+      providerId: 'p2',
+      modelId: 'm2',
+      requestedBy: 'local',
+      instruction: 'go',
+      createdAt: '2026-09-15T00:00:00.000Z',
+    })
+
+    const events = changedEvents(h)
+    expect(events).toHaveLength(1)
+    expect(events[0]?.data).toMatchObject({
+      from_provider: 'p1',
+      from_model: 'm1',
+      to_provider: 'p2',
+      to_model: 'm2',
+      reason: 'override',
+      override_id: 'ov_1',
+      error_code: '',
+    })
+  })
+
+  it('override 指向的就是档位模型时不算路由变化，不发事件', async () => {
+    const script = scriptedProvider({ events: [text('ok')] })
+    const h = await harness({
+      router: new ModelRouter(twoModelConfig()),
+      providerFactory: () => script.provider,
+    })
+    await h.runtime.submitMessage(h.conversation.id, 'go', undefined, {
+      overrideId: 'ov_2',
+      scope: 'next-turn',
+      providerId: 'p1',
+      modelId: 'm1',
+      requestedBy: 'local',
+      instruction: 'go',
+      createdAt: '2026-09-15T00:00:00.000Z',
+    })
+    expect(changedEvents(h)).toHaveLength(0)
+  })
+
+  it('fallback 换候选时发出事件，并带上触发它的错误码', async () => {
+    // parts/09 §9.5：「切换模型后必须重新构建请求并写 model_route_changed 事件」。
+    // 用户明确指定的模型因连接失败被换掉，是必须能看见的事。
+    const transient: ModelProvider = {
+      stream: () => {
+        throw new AgentError({
+          code: ErrorCode.PROVIDER_UNAVAILABLE,
+          message: '5xx',
+          source: 'test',
+        })
+      },
+      probe: () => Promise.resolve({ ok: true }),
+    }
+    const healthy = scriptedProvider({ events: [text('降级后成功')] }).provider
+    const h = await harness({
+      router: new ModelRouter(twoModelConfig()),
+      providerFactory: (route) => (route.model.id === 'm1' ? transient : healthy),
+    })
+
+    const result = await h.runtime.submitMessage(h.conversation.id, 'go')
+    expect(result.status).toBe(TurnStatus.COMPLETED)
+
+    const events = changedEvents(h)
+    expect(events).toHaveLength(1)
+    expect(events[0]?.data).toMatchObject({
+      from_provider: 'p1',
+      from_model: 'm1',
+      to_provider: 'p2',
+      to_model: 'm2',
+      reason: 'fallback',
+      error_code: ErrorCode.PROVIDER_UNAVAILABLE,
+      override_id: '',
+    })
+  })
+
+  it('事件不改变终止语义：它不是终止信号', async () => {
+    const script = scriptedProvider({ events: [text('ok')] })
+    const h = await harness({
+      router: new ModelRouter(twoModelConfig()),
+      providerFactory: () => script.provider,
+    })
+    await h.runtime.submitMessage(h.conversation.id, 'go', undefined, {
+      overrideId: 'ov_3',
+      scope: 'next-turn',
+      providerId: 'p2',
+      modelId: 'm2',
+      requestedBy: 'local',
+      instruction: 'go',
+      createdAt: '2026-09-15T00:00:00.000Z',
+    })
+
+    const types = h.events().map((e) => e.type)
+    expect(types.indexOf('model_route_changed')).toBeLessThan(types.indexOf('turn_end'))
+    expect(h.events().at(-1)?.type).toBe('turn_end')
+  })
+})
+
+/**
+ * fallback 的下标对齐（回归）。
+ *
+ * `ModelRouter.resolve()` 返回的是**第一个能通过校验的候选**，不是
+ * `candidates[0]`——配置层就不可用的候选（模型被禁用、不支持工具、窗口太小）
+ * 会被它跳过。这一点在 `implementation` 档位上尤其常见：`supportsTools` 为假的
+ * 模型在保存配置时就会被 `/model use` 拒掉，但手改 `config.json` 或旧数据里
+ * 完全可能存在，而 `TaskIntent.requiresTools` 恒为 `true`。
+ *
+ * 早先 runtime 假定"我从下标 0 开始、每次 fallback 加一"，于是下标与实际运行的
+ * 模型错位，两个后果同时出现：
+ * 1. `model_route_changed` 的 `from` 报出**一个从未运行过的模型**；
+ * 2. fallback 重新请求**刚失败的那个模型**（还顺手把 `providerRetries` 归零）。
+ *
+ * 这条用例的配置刻意让 `candidates[0]` 不可用。
+ */
+describe('fallback 的下标与实际运行的模型对齐', () => {
+  const provider = (id: string) => ({
+    id,
+    name: id,
+    baseUrl: 'https://api.example.invalid',
+    apiKeyRef: { source: 'env' as const, key: 'K' },
+    createdAt: '',
+    updatedAt: '',
+    enabled: true,
+  })
+
+  const profile = (
+    id: string,
+    providerId: string,
+    supportsTools: boolean,
+  ): ConfigDocument['model_profiles'][number] => ({
+    id,
+    providerId,
+    contextWindow: 100_000,
+    maxOutputTokens: 1_000,
+    supportsThinking: false,
+    supportsTools,
+    supportsVision: false,
+    supports1MContext: false,
+    enabled: true,
+  })
+
+  /**
+   * `candidates[0]`（档位模型 m1）不支持工具 → `resolve()` 从 m2 起步。
+   *
+   * m2 必须在回退链里：`resolve()` 的候选 = [override?, 档位模型, ...回退链]，
+   * 档位模型被跳过之后要有人接住，否则它会直接抛 "no eligible model"。
+   */
+  const configWithUnusableFirst = (): ConfigDocument => ({
+    schema_version: 1,
+    llm_channels: [],
+    llm_models: [],
+    app_settings: {},
+    providers: [provider('p1'), provider('p2')],
+    model_profiles: [profile('m1', 'p1', false), profile('m2', 'p2', true)],
+    tier_assignments: [
+      {
+        tier: 'implementation',
+        modelRef: { providerId: 'p1', modelId: 'm1' },
+        enabled: true,
+        fallbackModelRefs: [{ providerId: 'p2', modelId: 'm2' }],
+      },
+    ],
+  })
+
+  it('起点落在被跳过的候选之后时，真实调用的模型与 resolvedIndex 一致', async () => {
+    const script = scriptedProvider({ events: [text('ok')] })
+    const seen: string[] = []
+    const h = await harness({
+      router: new ModelRouter(configWithUnusableFirst()),
+      providerFactory: (route) => {
+        seen.push(route.model.id)
+        return script.provider
+      },
+    })
+
+    const result = await h.runtime.submitMessage(h.conversation.id, 'go')
+    expect(result.status).toBe(TurnStatus.COMPLETED)
+    // 第一个候选不可用 → 直接跑 m2，而不是"以为在跑 m1"
+    expect(seen).toEqual(['m2'])
+
+    const turn = await persisted(h.store, h.conversation.id, result.turn_id)
+    expect(turn.modelSnapshot?.modelId).toBe('m2')
+    // 路由没有变化（无 override、没走 fallback），不该有事件
+    expect(h.events().filter((e) => e.type === 'model_route_changed')).toHaveLength(0)
+  })
+
+  it('fallback 的 from 是**刚失败的那个**，不是被跳过的候选', async () => {
+    // 候选链 = [m1(不可用), m2(暂时性故障), m3(健康)]。
+    // `resolve()` 跳过 m1 → 起点是 **m2**，而 `candidateIndex` 早先会是 0。
+    const config: ConfigDocument = {
+      ...configWithUnusableFirst(),
+      providers: [provider('p1'), provider('p2'), provider('p3')],
+      model_profiles: [
+        profile('m1', 'p1', false),
+        profile('m2', 'p2', true),
+        profile('m3', 'p3', true),
+      ],
+      tier_assignments: [
+        {
+          tier: 'implementation',
+          modelRef: { providerId: 'p1', modelId: 'm1' },
+          enabled: true,
+          fallbackModelRefs: [
+            { providerId: 'p2', modelId: 'm2' },
+            { providerId: 'p3', modelId: 'm3' },
+          ],
+        },
+      ],
+    }
+
+    // 统计**真正发起过的请求**。重试复用同一个 provider 实例，
+    // 所以要在 provider 内部数，不能数 `providerFactory` 的调用次数。
+    let failingStreams = 0
+    const transient: ModelProvider = {
+      stream: () => {
+        failingStreams += 1
+        throw new AgentError({
+          code: ErrorCode.PROVIDER_UNAVAILABLE,
+          message: '5xx',
+          source: 'test',
+        })
+      },
+      probe: () => Promise.resolve({ ok: true }),
+    }
+    const healthy = scriptedProvider({ events: [text('降级后成功')] })
+    const routed: string[] = []
+    const h = await harness({
+      router: new ModelRouter(config),
+      providerFactory: (route) => {
+        routed.push(route.model.id)
+        return route.model.id === 'm2' ? transient : healthy.provider
+      },
+    })
+
+    const result = await h.runtime.submitMessage(h.conversation.id, 'go')
+    expect(result.status).toBe(TurnStatus.COMPLETED)
+
+    const events = h.events().filter((e) => e.type === 'model_route_changed')
+    expect(events).toHaveLength(1)
+    // from 必须是**真的跑过的** m2。下标错位时这里会是 m1——一个从未被调用过的模型。
+    expect(events[0]?.data).toMatchObject({
+      from_provider: 'p2',
+      from_model: 'm2',
+      to_provider: 'p3',
+      to_model: 'm3',
+      reason: 'fallback',
+    })
+    // m2 只该被请求"1 次 + 2 次重试"；错位时它会被当成下一站再打一轮。
+    // m1 从未被调用过——它连候选都没进得去（`resolve()` 跳过了它）。
+    expect(failingStreams).toBe(3)
+    expect(routed).toEqual(['m2', 'm3'])
+    expect(healthy.callCount()).toBe(1)
+  })
+
+  it('候选链走完仍无可用者 → 以 failed 收尾，而不是抛异常出 runTurn', async () => {
+    // 候选链 = [m1(不可用), m2(一直故障)]：往后找会一路找空。
+    const config = configWithUnusableFirst()
+    const transient: ModelProvider = {
+      stream: () => {
+        throw new AgentError({
+          code: ErrorCode.PROVIDER_UNAVAILABLE,
+          message: '5xx',
+          source: 'test',
+        })
+      },
+      probe: () => Promise.resolve({ ok: true }),
+    }
+    const h = await harness({
+      router: new ModelRouter(config),
+      providerFactory: () => transient,
+    })
+
+    const result = await h.runtime.submitMessage(h.conversation.id, 'go')
+    expect(result.status).toBe(TurnStatus.FAILED)
+    expect(result.error).toBe('5xx')
+    // 没有"切到一个不存在的模型"的假事件
+    expect(h.events().filter((e) => e.type === 'model_route_changed')).toHaveLength(0)
+  })
+})
+
+describe('override 生效时 tierRef 的三种情形', () => {
+  const provider = (id: string, enabled = true) => ({
+    id,
+    name: id,
+    baseUrl: 'https://api.example.invalid',
+    apiKeyRef: { source: 'env' as const, key: 'K' },
+    createdAt: '',
+    updatedAt: '',
+    enabled,
+  })
+
+  const profile = (id: string, providerId: string): ConfigDocument['model_profiles'][number] => ({
+    id,
+    providerId,
+    contextWindow: 100_000,
+    maxOutputTokens: 1_000,
+    supportsThinking: false,
+    supportsTools: true,
+    supportsVision: false,
+    supports1MContext: false,
+    enabled: true,
+  })
+
+  const override = {
+    overrideId: 'ov',
+    scope: 'next-turn' as const,
+    providerId: 'p2',
+    modelId: 'm2',
+    requestedBy: 'local',
+    instruction: 'go',
+    createdAt: '2026-09-15T00:00:00.000Z',
+  }
+
+  const run = async (doc: ConfigDocument) => {
+    const script = scriptedProvider({ events: [text('ok')] })
+    const h = await harness({
+      router: new ModelRouter(doc),
+      providerFactory: () => script.provider,
+    })
+    await h.runtime.submitMessage(h.conversation.id, 'go', undefined, override)
+    return h.events().filter((e) => e.type === 'model_route_changed')
+  }
+
+  const base = (tierEnabled: boolean): ConfigDocument => ({
+    schema_version: 1,
+    llm_channels: [],
+    llm_models: [],
+    app_settings: {},
+    providers: [provider('p1'), provider('p2')],
+    model_profiles: [profile('m1', 'p1'), profile('m2', 'p2')],
+    tier_assignments: [
+      {
+        tier: 'implementation',
+        modelRef: { providerId: 'p1', modelId: 'm1' },
+        enabled: tierEnabled,
+        fallbackModelRefs: [],
+      },
+    ],
+  })
+
+  it('档位启用且指向别的模型 → from 是该档位模型', async () => {
+    const events = await run(base(true))
+    expect(events).toHaveLength(1)
+    expect(events[0]?.data).toMatchObject({
+      from_provider: 'p1',
+      from_model: 'm1',
+      reason: 'override',
+    })
+  })
+
+  it('档位被**禁用** → from 留空串，而不是指向一个"本来也不会被用"的模型', async () => {
+    // 档位禁用时 `resolve()` 根本不会把它的模型放进候选（没有 override 会直接抛
+    // MODEL_NOT_FOUND）。此时把 from 报成 m1 是不成立的叙述。
+    const events = await run(base(false))
+    expect(events).toHaveLength(1)
+    expect(events[0]?.data).toMatchObject({
+      from_provider: '',
+      from_model: '',
+      to_model: 'm2',
+      reason: 'override',
+    })
+  })
+
+  it('完全没有该档位 → 仍然发事件（override 确实改变了路由）', async () => {
+    const events = await run({ ...base(true), tier_assignments: [] })
+    expect(events).toHaveLength(1)
+    expect(events[0]?.data).toMatchObject({ from_model: '', to_model: 'm2', reason: 'override' })
+  })
+
+  it('override 与档位模型相同 → 不发事件（路由没变）', async () => {
+    const doc: ConfigDocument = {
+      ...base(true),
+      tier_assignments: [
+        {
+          tier: 'implementation',
+          modelRef: { providerId: 'p2', modelId: 'm2' },
+          enabled: true,
+          fallbackModelRefs: [],
+        },
+      ],
+    }
+    expect(await run(doc)).toHaveLength(0)
   })
 })

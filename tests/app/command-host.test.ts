@@ -314,6 +314,80 @@ describe('CommandHostAdapter：配置视图与回写', () => {
     expect(doc.app_settings['policy.tool_timeout_ms']).toBe('5000')
   })
 
+  it('updateConfig 保留视图里看不见的 maxCostPerTurn（回归）', async () => {
+    // 此前这里按视图字段**重建**整条 assignment：只有 `fallbackModelRefs` 被
+    // 显式捞了回来，`maxCostPerTurn` 每次都被静默清掉——而 `/language`
+    // 写一个设置项也会走到这条回写路径，所以用户每切一次语言就丢一次成本上限。
+    // 修法是"在既有 assignment 上合并"，这条用例把该性质钉住。
+    const { app, host } = await harness(
+      config({
+        tier_assignments: [
+          {
+            tier: ModelTier.IMPLEMENTATION,
+            modelRef: { providerId: 'p', modelId: 'm1' },
+            enabled: true,
+            fallbackModelRefs: [],
+            maxCostPerTurn: 0.75,
+          },
+        ],
+      }),
+    )
+
+    await host.updateConfig((view) => ({
+      ...view,
+      settings: { ...view.settings, language: 'en' },
+    }))
+
+    const doc = await app.configStore.read()
+    expect(doc.app_settings['language']).toBe('en')
+    expect(doc.tier_assignments[0]?.maxCostPerTurn).toBe(0.75)
+  })
+
+  it('updateConfig 把档位禁用状态写下去（enabled 来自视图）', async () => {
+    const { app, host } = await harness()
+    await host.updateConfig((view) => ({
+      ...view,
+      tiers: view.tiers.map((t) => ({ ...t, enabled: false })),
+    }))
+
+    const doc = await app.configStore.read()
+    expect(doc.tier_assignments[0]?.enabled).toBe(false)
+  })
+
+  it('readConfig 透出 thinkingEnabled / reasoningEffort，并保留"未设置"与 false 的区别', async () => {
+    const { host } = await harness(
+      config({
+        model_profiles: [
+          {
+            id: 'm1',
+            providerId: 'p',
+            contextWindow: 100_000,
+            maxOutputTokens: 4096,
+            supportsThinking: true,
+            supportsTools: true,
+            supportsVision: false,
+            supports1MContext: false,
+            enabled: true,
+            thinkingEnabled: false,
+            reasoningEffort: 'low',
+          },
+        ],
+      }),
+    )
+
+    const view = await host.readConfig()
+    expect(view.models[0]?.thinkingEnabled).toBe(false)
+    expect(view.models[0]?.reasoningEffort).toBe('low')
+
+    // 从未设置过的模型：字段**缺席**而不是被填成默认值。
+    // 缺省与 false 在存储层是两件事，视图不能把它们抹平
+    //（怎么解释缺省是 `thinkingConfigFor` 的事，见 ADR 0004 D3）。
+    const { host: fresh } = await harness()
+    const freshView = await fresh.readConfig()
+    expect('thinkingEnabled' in (freshView.models[0] ?? {})).toBe(false)
+    expect('reasoningEffort' in (freshView.models[0] ?? {})).toBe(false)
+  })
+
   it('updateConfig 新增一个原本不存在的档位时 fallback 为空数组（不是 undefined）', async () => {
     const { app, host } = await harness()
     await host.updateConfig((view) => ({
@@ -339,6 +413,78 @@ describe('CommandHostAdapter：配置视图与回写', () => {
     const doc = await app.configStore.read()
     expect(doc.model_profiles[0]?.thinkingEnabled).toBe(true)
     expect(doc.model_profiles[0]?.reasoningEffort).toBe('high')
+  })
+
+  it('assignTierModel 换模型时保留 fallback 链与成本上限', async () => {
+    // 换模型不等于清空回退策略和成本上限——那属于"顺手改掉用户配置"。
+    const { app, host } = await harness(
+      config({
+        model_profiles: [
+          {
+            id: 'm1',
+            providerId: 'p',
+            contextWindow: 100_000,
+            maxOutputTokens: 4096,
+            supportsThinking: true,
+            supportsTools: true,
+            supportsVision: false,
+            supports1MContext: false,
+            enabled: true,
+          },
+          {
+            id: 'm2',
+            providerId: 'p',
+            contextWindow: 100_000,
+            maxOutputTokens: 4096,
+            supportsThinking: false,
+            supportsTools: true,
+            supportsVision: false,
+            supports1MContext: false,
+            enabled: true,
+          },
+        ],
+        tier_assignments: [
+          {
+            tier: ModelTier.IMPLEMENTATION,
+            modelRef: { providerId: 'p', modelId: 'm1' },
+            enabled: true,
+            fallbackModelRefs: [{ providerId: 'p', modelId: 'm_fallback' }],
+            maxCostPerTurn: 1.5,
+          },
+        ],
+      }),
+    )
+
+    await host.assignTierModel(ModelTier.IMPLEMENTATION, 'p', 'm2')
+
+    const doc = await app.configStore.read()
+    const assignment = doc.tier_assignments.find((t) => t.tier === ModelTier.IMPLEMENTATION)
+    expect(assignment?.modelRef).toEqual({ providerId: 'p', modelId: 'm2' })
+    expect(assignment?.fallbackModelRefs).toEqual([{ providerId: 'p', modelId: 'm_fallback' }])
+    expect(assignment?.maxCostPerTurn).toBe(1.5)
+  })
+
+  it('assignTierModel 对不存在的档位是"新增"而不是静默无操作', async () => {
+    // 首次配置时档位表是空的，`/model use` 必须先能建出这条分配。
+    // 若这里悄悄 return，命令会回一句"已设置"而磁盘上什么都没有。
+    const { app, host } = await harness(config({ tier_assignments: [] }))
+
+    await host.assignTierModel(ModelTier.PLANNING, 'p', 'm1')
+
+    const doc = await app.configStore.read()
+    const assignment = doc.tier_assignments.find((t) => t.tier === ModelTier.PLANNING)
+    expect(assignment?.modelRef).toEqual({ providerId: 'p', modelId: 'm1' })
+    expect(assignment?.enabled).toBe(true)
+    expect(assignment?.fallbackModelRefs).toEqual([])
+  })
+
+  it('setModelContextWindow 只改当前档位指向的那份 profile', async () => {
+    const { app, host } = await harness()
+
+    await host.setModelContextWindow(ModelTier.IMPLEMENTATION, 1_000_000)
+
+    const doc = await app.configStore.read()
+    expect(doc.model_profiles[0]?.contextWindow).toBe(1_000_000)
   })
 })
 

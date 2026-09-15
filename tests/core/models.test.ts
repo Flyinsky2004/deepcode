@@ -123,8 +123,21 @@ describe('isAssistantBlockArray', () => {
 })
 
 describe('推理强度', () => {
-  it('3 档', () => {
-    expect([...REASONING_EFFORTS]).toEqual(['low', 'medium', 'high'])
+  /**
+   * 4 档，含 `xhigh`——这是**修正**的结果（ADR 0004 D4）。
+   *
+   * 旧实现的 `/effort` 菜单提供 low/medium/high/xhigh，而落盘校验
+   * （`storage.py:295-298`）只接受前三项并抛 `ValueError`；`_set_effort`
+   * 没有 try/except，于是选 xhigh 会先写成功 `thinking_enabled=True`、
+   * 再在校验上炸掉，配置停在半途中。把 xhigh 纳入合法集合，
+   * 旧菜单里的那一项才不再是死路。
+   */
+  it('4 档，含旧 /effort 菜单里的 xhigh', () => {
+    expect([...REASONING_EFFORTS]).toEqual(['low', 'medium', 'high', 'xhigh'])
+  })
+
+  it('xhigh 能被 isReasoningEffort 收窄（旧实现会在这里抛错）', () => {
+    expect(isReasoningEffort('xhigh')).toBe(true)
   })
 
   it('默认 high，与旧实现一致', () => {

@@ -15,6 +15,7 @@ import {
   type ModelOverride,
   type TaskIntent,
   ModelTier,
+  thinkingConfigFor,
 } from '../core/provider.js'
 import {
   RuntimeEventType,
@@ -38,7 +39,7 @@ import type { ChatStore } from '../storage/chat-store.js'
 import { argsPreview } from '../storage/audit.js'
 import type { PersistedTurn } from '../storage/types.js'
 import type { ModelRouter } from '../providers/router.js'
-import type { ResolvedModelRoute } from '../providers/router.js'
+import { sameRef, type ResolvedModelRoute } from '../providers/router.js'
 import type { ContextBuilder } from './context-builder.js'
 import type { ContextCompactor } from './compaction.js'
 import type { ToolExecutor } from '../tools/executor.js'
@@ -350,8 +351,19 @@ export class AgentRuntime {
               modelId: persisted.routeSnapshot.model.id,
             },
           ],
+          resolvedIndex: 0,
+          // 恢复时没有发生路由决策——模型是 turn 起点就定下的快照。
+          // `tierRef` 取同一个值，于是 override 分支不会误报一次"路由变更"。
+          tierRef: {
+            providerId: persisted.routeSnapshot.provider.id,
+            modelId: persisted.routeSnapshot.model.id,
+          },
         }
       } else if (this.options.router) route = await this.options.router.resolve(intent, override)
+      // 下标必须来自 `resolvedIndex`，**不能假定从 0 开始**：`resolve()` 会跳过
+      // 配置层就不可用的候选，所以 `route.model` 未必是 `candidates[0]`。
+      // 错位的后果见下方 fallback 分支。
+      if (route) candidateIndex = route.resolvedIndex
       provider = route
         ? (this.options.providerFactory?.(route) ??
           new AnthropicMessagesProvider({ provider: route.provider }))
@@ -376,6 +388,38 @@ export class AgentRuntime {
             tier: route.tier,
           },
         })
+
+      // 「显式 override 改了路由」也要留痕（parts/09 §6.1 / §9.5）。
+      //
+      // `from` 取 `route.tierRef`——**档位自己**分配的模型，而不是候选列表里的
+      // 下一个。候选列表被去重过：override 与档位模型相同时会合并成一条，
+      // 于是 `candidates[1]` 变成回退链的首项，"从哪来"就答错了。
+      //
+      // 三种情形分得很清：
+      // - `tierRef` 等于当前路由 → 路由没变，**不发**（发了是噪音）；
+      // - `tierRef` 是别的模型 → 发事件，`from` 是"本来会用的那个"；
+      // - `tierRef` 为 `undefined`（该档位未配置或已禁用）→ 仍然发，
+      //   `from` 留空串。此时没有 override 会直接抛 `MODEL_NOT_FOUND`，
+      //   "从空路由换成 B"本身就是必须留痕的事实，不能因为答不出 `from` 就不发。
+      const currentRef =
+        route === undefined ? undefined : { providerId: route.provider.id, modelId: route.model.id }
+      if (
+        route !== undefined &&
+        currentRef !== undefined &&
+        override !== undefined &&
+        (route.tierRef === undefined || !sameRef(route.tierRef, currentRef))
+      )
+        await this.emit(sessionId, turnId, RuntimeEventType.MODEL_ROUTE_CHANGED, {
+          from_provider: route.tierRef?.providerId ?? '',
+          from_model: route.tierRef?.modelId ?? '',
+          to_provider: route.provider.id,
+          to_model: route.model.id,
+          tier: route.tier,
+          reason: 'override',
+          error_code: '',
+          override_id: override.overrideId,
+        }).catch(() => undefined)
+
       if (!provider || !model)
         return await finish(
           TurnStatus.FAILED,
@@ -544,12 +588,24 @@ export class AgentRuntime {
         if (!finalizationAttempted) await transition(TurnPhase.CALLING_MODEL, 'context ready')
         tracker.recordModelCall()
         numTurns += 1
+        // `maxTokens` 与它折算出的思考预算必须来自**同一个**值，否则会出现
+        // 「预算按 A 算、max_tokens 用 B 发」——provider 层的
+        // `maxTokens > budgetTokens` 断言就会在预算大于 A 时炸掉。
+        const maxTokens = route?.model.maxOutputTokens ?? 8192
+        // 思考开关与强度是 **ModelProfile 的运行偏好**，缺省即关闭
+        // （见 `thinkingConfigFor` 与 ADR 0004 D3）。
+        //
+        // 恢复路径（`persisted.routeSnapshot`）拿到的是 turn 起点落盘的**完整**
+        // ModelProfile，所以中途 `/thinking` 改配置不会改变一个已在跑的 turn
+        // ——这正是 parts/09 §9.1「每个 turn 开始时保存能力快照」要求的。
+        const thinking = route === undefined ? undefined : thinkingConfigFor(route.model, maxTokens)
         const request: ModelRequest = {
           model: model ?? '',
-          maxTokens: route?.model.maxOutputTokens ?? 8192,
+          maxTokens,
           messages: envelope.conversation,
           system: renderSystemPrompt(envelope.system),
           tools: finalizationAttempted ? [] : envelope.tools,
+          ...(thinking === undefined ? {} : { thinking }),
         }
         const blocks: Array<Record<string, unknown>> = []
         const toolCalls: Array<{
@@ -621,23 +677,42 @@ export class AgentRuntime {
             providerRetries += 1
             continue
           }
-          if (
-            isTransient(e.code) &&
-            route &&
-            this.options.router &&
-            candidateIndex + 1 < route.candidates.length
-          ) {
-            candidateIndex += 1
-            route = await this.options.router.resolveCandidate(
-              intent,
-              route.candidates[candidateIndex]!,
-              route.candidates,
-            )
+          const advanced =
+            isTransient(e.code) && route && this.options.router
+              ? await this.#nextUsableCandidate(intent, route, candidateIndex + 1)
+              : undefined
+          if (route && advanced !== undefined) {
+            // `from` 取**当前 route**——它就是刚刚失败的那个模型。
+            // ⚠️ 不能取 `candidates[candidateIndex]`：`resolve()` 会跳过配置层就
+            // 不可用的候选，`candidateIndex` 与 `route.model` 可能错位，
+            // 那样报出的"从 A 滑到 B"里的 A 会是**一个从未运行过的模型**，
+            // 而且下一次 fallback 会重新请求刚失败的那个。
+            const previous = { providerId: route.provider.id, modelId: route.model.id }
+            route = advanced.route
+            candidateIndex = advanced.index
             provider =
               this.options.providerFactory?.(route) ??
               new AnthropicMessagesProvider({ provider: route.provider })
             model = route.model.id
             providerRetries = 0
+            // parts/09 §9.5：「切换模型后必须重新构建请求并写 model_route_changed」。
+            // 用户明确指定的模型因连接失败被换掉，是**用户必须能看见**的事
+            // ——否则他以为 `/workwith` 的模型跑完了整件事。
+            //
+            // 这里的 `catch` 是**刻意**的（与文件里其余 emit 不同）：那几处是
+            // turn 的正文流（文本、工具结果），写不进去说明事件通道已经坏了，
+            // turn 该失败；而本条是通知类事件，为了「让用户看见模型变了」而
+            // 把整个 turn 判失败，是拿手段换目的。
+            await this.emit(sessionId, turnId, RuntimeEventType.MODEL_ROUTE_CHANGED, {
+              from_provider: previous.providerId,
+              from_model: previous.modelId,
+              to_provider: route.provider.id,
+              to_model: route.model.id,
+              tier: route.tier,
+              reason: 'fallback',
+              error_code: e.code,
+              override_id: override?.overrideId ?? '',
+            }).catch(() => undefined)
             await this.options.chatStore.updateTurn(sessionId, turnId, {
               modelSnapshot: {
                 providerId: route.provider.id,
@@ -852,6 +927,39 @@ export class AgentRuntime {
     } finally {
       wallTimeout.cleanup()
     }
+  }
+
+  /**
+   * 从 `from` 起找一个**真的可用**的候选模型。
+   *
+   * 为什么要循环而不是只试下一个：`resolve()` 在 turn 起点就会跳过配置层
+   * 不可用的候选（`router.ts` 的 for/catch），所以候选列表里可以躺着若干个
+   * 一调 `resolveCandidate` 就抛的条目（模型被禁用、不支持工具、窗口太小）。
+   * 只试下一个的话：一是会挑中一个注定失败的模型、二是那个模型下一轮
+   * 又触发一次 fallback，把下标推着往前走——两件事都会让
+   * `model_route_changed` 报出与实际不符的模型。
+   *
+   * 全部试完仍无可用者时返回 `undefined`，由调用方以 `FAILED` 收尾
+   * ——这与 `resolve()` 起点处"没有可用模型"的处理一致。
+   */
+  async #nextUsableCandidate(
+    intent: TaskIntent,
+    route: ResolvedModelRoute,
+    from: number,
+  ): Promise<{ readonly route: ResolvedModelRoute; readonly index: number } | undefined> {
+    const router = this.options.router
+    if (!router) return undefined
+    for (let index = from; index < route.candidates.length; index += 1) {
+      try {
+        return {
+          route: await router.resolveCandidate(intent, route.candidates[index]!, route.candidates),
+          index,
+        }
+      } catch {
+        // 这个候选在配置层就不可用，继续往后找。
+      }
+    }
+    return undefined
   }
 
   /**

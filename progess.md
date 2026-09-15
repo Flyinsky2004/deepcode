@@ -15,6 +15,7 @@
 - [x] 建立 TypeScript 工程骨架（Phase 0 完成，含 `src/core` 全部契约；见下方 Phase 0 段落）
 - [x] 实现运行时核心（Phase 1–5）
 - [x] 实现模型、工具、权限和持久化（Phase 1–5）
+- [x] 实现 Slash Commands 与 `/workwith`（见下方 Phase 6 段）
 - [x] 实现 TUI / Web UI（见下方「Phase 7 已完成」段）
 - [ ] 实现 Skill、Sub-agent、MCP
 - [ ] 完成跨模型和恢复测试
@@ -54,7 +55,7 @@
 - [x] 所有公共协议都有单元测试和序列化测试（15/15 模块有同名测试文件；
       往返测试见 `tests/core/serialization.test.ts`）
 
-当前规模：19 个测试文件、264 个测试；`pnpm check` 已通过。全量覆盖率命令仍低于 80% 门槛（后续质量门禁阶段继续补齐）。
+当时规模：19 个测试文件、264 个测试。**当前规模见文件末尾的「测试与覆盖率」段。**
 
 ### Phase 0 产出物
 
@@ -184,24 +185,92 @@
 - 断电恢复后能识别 boundary 并继续工作
 - context overflow 可压缩并最多按策略重试一次
 
-## Phase 6：Slash Commands 和 `/workwith`
+## Phase 6：Slash Commands 和 `/workwith`（已完成）
 
 ### 工作项
 
-- [ ] 实现独立 CommandRegistry
-- [ ] 实现 `/model`、`/compact`、`/sessions`、`/mcp`、`/skills`、`/init`
-- [ ] 实现 `/workwith provider/model instruction`
-- [ ] `/workwith` 只作用于下一项任务，不修改全局档位
-- [ ] 实现模型存在性、能力、secret 和 enabled 校验
-- [ ] 记录 model override、route change 和 audit events
-- [ ] 所有命令支持参数错误、幂等和 SESSION_BUSY 处理
+- [x] 实现独立 CommandRegistry
+- [x] 实现 `/model`、`/compact`、`/sessions`、`/mcp`、`/skills`、`/init`
+      （`/mcp` `/skills` 指向 Phase 8/10 的子系统，**诚实地降级**：
+      返回 `COMMAND_NOT_AVAILABLE` + 具体原因，不返回假数据、不用空列表假装成功）
+- [x] 实现 `/workwith provider/model instruction`
+- [x] `/workwith` 只作用于下一项任务，不修改全局档位
+- [x] 实现模型存在性、能力、secret 和 enabled 校验
+- [x] 记录 model override、route change 和 audit events
+      （`model_route_changed` 是本次新增的第 14 种 runtime 事件，见 ADR 0004 D8）
+- [x] 所有命令支持参数错误、幂等和 SESSION_BUSY 处理
 
 ### 验收
 
-- `/workwith deepseek/v4-flash 完成计划实现` 使用指定模型
-- `/workwith openai/gpt-6-astra 扫描工程` 使用指定模型
-- 刷新客户端或重试请求不会重复执行命令
-- `/workwith` 不绕过权限、预算、compact 或 skill guard
+以下四项已由 `tests/acceptance/phase6.test.ts` 写成可执行断言（19 条用例）：
+
+- [x] `/workwith deepseek/v4-flash 完成计划实现` 使用指定模型
+- [x] `/workwith openai/gpt-6-astra 扫描工程` 使用指定模型
+- [x] 刷新客户端或重试请求不会重复执行命令
+- [x] `/workwith` 不绕过权限、预算、compact 或 skill guard
+
+### Phase 6 的收尾内容（2026-09-15 补完）
+
+Phase 6 的主体（注册表、管线、`/workwith`、`/sessions`、`/clear`、`/compact`、
+`/language`、`/init`）此前已完成。本次补完的是三块**卡在别处**的东西：
+
+1. **`/model use` 写分支**。契约、消歧与能力校验（`resolveModelRef` /
+   `checkCapability`）早已就绪，缺的是写入路径。
+2. **`/thinking` `/reasoning` `/effort` `/1M`**。它们此前是"诚实降级"，
+   因为 `ModelProfile.thinkingEnabled` / `reasoningEffort` **没有消费者**——
+   只有 TUI 状态栏读来显示，runtime 构造 `ModelRequest` 时不填 `thinking`。
+   写一个没有消费者的开关比不写更坏，所以先降级。
+   本次补上 runtime 的消费（`thinkingConfigFor`），四条命令才成立。
+   **顺序不能反：先让配置有效，再开放写入口。**
+3. **`model_route_changed` 事件**。fallback 换候选此前是静默发生的。
+
+决策与依据见 `docs/adr/0004-thinking-effort-and-model-commands.md`（D1–D10）。
+其中三处需要单独点出：
+
+| 项 | 性质 |
+|---|---|
+| `/effort xhigh` | **修正**。旧实现的 `/effort` 菜单提供 xhigh，而落盘校验只接受 low/medium/high 且抛 `ValueError`；`_set_effort` 没有 try/except，且在 `else` 分支**先写 thinking 再写 effort** → 选一次 xhigh 就把配置**半写** |
+| `thinkingEnabled` 缺省解释为**关闭** | 与旧 `thinking_enabled` 默认 `True` **有意不同**。本项目 `supportsThinking` 缺省 `false`，沿用旧默认会发出模型没声明的能力请求 |
+| effort → `budget_tokens` 映射表 | **新增协议，无旧来源可转录**。旧实现从不发 `budget_tokens`；`parts/03` §2.1 要求对接官方 Anthropic 时必须补上。取 4k/12k/24k/48k |
+
+### 独立审查发现并修正的 5 处缺陷
+
+收尾后经独立审查，又发现并修掉 5 处——**全部是本次新增代码自身的问题**，
+两条被"声称做了但没做成"那一类：
+
+| # | 缺陷 | 性质 |
+|---|---|---|
+| **B1** | fallback 用 `candidates[candidateIndex]` 当"变更前的模型"。`resolve()` 返回的是**第一个通过校验的候选**，不是 `candidates[0]`（配置层不可用的候选会被跳过，而 `implementation` 档位 `requiresTools` 恒真，所以这是常态）。下标错位导致：事件 `from` 报出**一个从未运行过的模型**，且 fallback **重新请求刚失败的那个** | 交付物（D8 事件）自身不正确。修法：`ResolvedModelRoute` 增加 `resolvedIndex`，fallback 改为沿候选链往后找**第一个真的可用**者（`#nextUsableCandidate`），`from` 取当前 route |
+| **B2** | `budget_tokens` 的官方约束是**两条**（最小 1024 **且**小于 `max_tokens`），初版只保证了后者。`maxOutputTokens ∈ [1025, 2046]` 的模型会发出 `budget_tokens: 1000` —— **必然被 endpoint 拒绝**，等于把"缺字段"换成"字段非法" | 与 D1 的目标直接冲突。现在放不下就不发（`maxTokens >= 2047` 才可能合法） |
+| **B3** | `/reasoning <level>` 只写 effort 是**空操作**：`reasoningEffort` 的唯一消费者要求 `thinkingEnabled === true`，而 D3 把缺省改成了关闭。回执里的"预算 24000"永远不会出现在请求里 | 见 ADR 0004 D4b。修正为与 `/effort` 一样合成一次写 |
+| **B4** | `AgentApplication.#updateActiveProfile` 在档位不存在/悬空分配时 `return`，写入被**无声丢弃**而调用方拿到"成功" | 与 D9 同族。改为抛 `MODEL_NOT_FOUND`（推翻了此前一条固化该行为的测试） |
+| **B5** | `/model use` 写后回读不到分配时返回 `ok: true` + 「档位 X → 未设置」——同时声称了成功和没写进去；且 `data` 一半入参回显、一半回读结果 | 改为 `FAILED` + `INVALID_STATE_TRANSITION`，`data` 全部取自回读 |
+
+### 已知限制
+
+以下为审查中发现、经评估后**刻意不在本次修**的项，逐条理由见 ADR 0004「已知限制」：
+
+- **`model_route_changed` 目前没有任何客户端消费** —— TUI 与 Web 对未知事件
+  都是"原样忽略"，所以本事件只进事件日志与 WS 流。**D8 的可观测性目标尚未兑现**：
+  把事件发出来是必要条件，不是充分条件。归 Phase 7。
+  ⚠️ 本节初版曾写"UI 侧仍可通过 `turn_start` 的模型快照实时得到同一信息"——
+  **那句话是错的**，`TurnStartEvent.data` 只有 `{ turn_number }`，没有模型快照。
+  UI 的真正兜底是落在 `chat.json` 里的 `TurnModelSnapshot`（事后可读）。
+- **Web 路径下 `local-principal` 等价于"已认证"** —— `AuthService` 固定用
+  `app.localPrincipalId`，所以那五个会写全局配置的命令可以从浏览器调用，
+  包括 `--listen lan --auth none`。不是本次新引入的（`/language` 早已如此），
+  但本次扩大了暴露面。归 Phase 7/11。
+- **思考预算可能超出 provider 请求超时**（`xhigh` = 48k > 官方提示的 32k 线），
+  触发时裸 `AbortError` 会变成 `INTERNAL_ERROR` 而非可识别的"超时"
+  ——违反设计约束 6。归 Phase 11。
+- **`/api` 仍为诚实降级**，且理由变了：不是"还没排到"，而是刻意的推迟
+  ——旧语法 `/api add deepseek <明文 API key>` 与 `parts/09` §9.1
+  「密钥不得出现在日志、事件、URL 或前端响应」冲突，且需要一套独立的
+  SecretRef 输入设计。见 ADR 0004 D10。
+- **`/workwith` 的回执在 turn 结束后才返回**：`AgentApplication.submitTurn`
+  会等到 turn 收尾（与 Web 的 `POST /api/turns` 同语义）。要做到事前提示需要
+  一条非阻塞提交路径，属 Phase 7 层面的决策。
+- `TaskIntent.requiresThinking` 仍硬编码 `false`：本次只让用户显式开关生效。
 
 ## Phase 7：TUI 和 Web UI
 
@@ -250,22 +319,25 @@
 3. **`EventLog` 成为事件的唯一持久化权威**（移除 `chat.json` 中无人读取、且每次流式增量都触发
    全文件重写的副本）。`emit` 泛型化后暴露出 `turn_end` 漏发 token 等字段。
 
-### Phase 6 部分完成（`src/commands/`）
+### Phase 6 已完成（`src/commands/`）
+
+> 本节曾记为「部分完成」，2026-09-15 补完后更新。当时的待补三项
+> （`/model use`、`/thinking` 等的 runtime 消费、`/init` 转录）**已全部落地**。
 
 契约层（`CommandDefinition` / `CommandHost` 端口 / 执行管线）、`/workwith` 与 model-ref 消歧
-已落地。内置 15 条命令中：**6 条真实现**（`/workwith` `/sessions` `/clear` `/compact`
-`/language` `/model` 只读分支）、**9 条诚实降级**（返回 `COMMAND_NOT_AVAILABLE` + 具体原因，
-不返回假数据、不用空列表假装成功）。
+已落地。内置 **15 条命令**：**11 条真实现**（`/workwith` `/init` `/sessions` `/clear`
+`/compact` `/language` `/model` 含写分支 `/thinking` `/reasoning` `/effort` `/1M`）、
+**4 条诚实降级**（`/skills` `/mcp` `/langfuse` `/api`，返回 `COMMAND_NOT_AVAILABLE` +
+具体原因，不返回假数据、不用空列表假装成功）。
 
-**待补**：`/model use` 写分支；`/thinking` `/reasoning` `/effort` 需要在 runtime 里补
-`ModelRequest.thinking` 的消费（当前只改配置不产生行为变化，故明确报不可用）；
-`/init` 需从旧 Python 源码逐字转录初始化指令全文。
+前三条降级指向确实尚未实现的子系统（Phase 8/10/11）；`/api` 是**刻意推迟**，
+理由见 ADR 0004 D10。
 
 ### 已知限制
 
-- **覆盖率分支项未达 80% 门槛**（约 69%）。缺口全在既有代码（`providers/anthropic.ts` 60%、
-  `runtime/agent-runtime.ts` 等）；Phase 6/7 新增代码四项均高于阈值。**阈值未下调**。
+- 覆盖率四项均高于阈值（语句 95.31 / 分支 91.22 / 函数 96.44 / 行 96.8，阈值 80）。
 - `chat.json` 仍是全量重写（写放大），需独立 ADR 与迁移工具才能改为 append-only。
+- `/workwith` 的回执在 turn 结束后才返回（见「Phase 6 的收尾内容」段的已知限制）。
 
 ## 覆盖率达标时发现的 8 个缺陷（已修）
 
@@ -346,10 +418,27 @@
 - [ ] 没有任何路径可以绕过 PermissionEngine
 - [ ] 文件写入支持原子替换和外部修改检测
 - [ ] 进程重启后 session、turn、权限、compact、tool execution 和 sub-agent 可恢复
-- [ ] `/workwith`、模型档位和 fallback 行为有测试
+- [x] `/workwith`、模型档位和 fallback 行为有测试
+      （`tests/acceptance/phase6.test.ts`、`tests/commands/model*.test.ts`、
+      `tests/runtime/agent-runtime.test.ts` 的 `model_route_changed 事件` 段）
 - [ ] Anthropic-only 协议在流式文本、thinking、tool use、usage、错误和取消场景下通过测试
 - [ ] TUI、CLI、Web UI 使用同一 Agent runtime
 - [ ] README、配置示例和本文件中的参数名称一致
+
+## 测试与覆盖率
+
+最近一次全量数据（Phase 6 收尾后，`pnpm check` 与 `pnpm test:coverage` 均 exit 0）：
+
+| 项 | 值 | 阈值 |
+|---|---|---|
+| 测试文件 / 用例 | 79 / 1702 | — |
+| 语句 | 95.28% | 80% |
+| 分支 | 91.24% | 80% |
+| 函数 | 96.46% | 80% |
+| 行 | 96.77% | 80% |
+
+阶段验收：`tests/acceptance/phase0.test.ts`、`phase1-5.test.ts`、
+`phase6.test.ts`、`phase7.test.ts`。
 
 ## 实施原则
 

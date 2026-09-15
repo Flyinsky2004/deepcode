@@ -24,7 +24,7 @@ import type { EventSink } from '../core/events.js'
 import type { PrincipalId, SessionId, TurnId } from '../core/ids.js'
 import type { PermissionMode, ApprovalService } from '../core/tool.js'
 import type { UserInputService } from '../core/input.js'
-import type { ModelOverride, ModelTier } from '../core/provider.js'
+import type { ModelOverride, ModelProfile, ModelTier } from '../core/provider.js'
 import { ACTIVE_PHASES, type TurnResult } from '../core/turn.js'
 import { systemClock, type Clock } from '../core/time.js'
 import type { AgentBudget } from '../core/budget.js'
@@ -33,7 +33,7 @@ import { ChatStore } from '../storage/chat-store.js'
 import { ConfigStore } from '../storage/config-store.js'
 import { EventLog } from '../storage/event-log.js'
 import { resolveAppPaths, type AppPaths } from '../storage/paths.js'
-import type { RecoverySnapshot } from '../storage/types.js'
+import type { RecoverySnapshot, TierAssignment } from '../storage/types.js'
 
 import { ModelRouter, type ResolvedModelRoute } from '../providers/router.js'
 import { AnthropicMessagesProvider } from '../providers/anthropic.js'
@@ -588,26 +588,94 @@ export class AgentApplication {
     tier: ModelTier,
     patch: { readonly thinkingEnabled?: boolean; readonly reasoningEffort?: string },
   ): Promise<void> {
+    await this.#updateActiveProfile(tier, (m) => ({
+      ...m,
+      ...(patch.thinkingEnabled === undefined ? {} : { thinkingEnabled: patch.thinkingEnabled }),
+      ...(patch.reasoningEffort === undefined ? {} : { reasoningEffort: patch.reasoningEffort }),
+    }))
+  }
+
+  /**
+   * 改某个档位所用模型的**上下文窗口**（`/1M`）。
+   *
+   * 与 `thinkingEnabled` / `reasoningEffort` 不同，`contextWindow` 是**能力声明**
+   * （`parts/09` §9.2），所以"能不能切"由命令层按 `supports1MContext` 判定，
+   * 这里只负责写。同理，这里也**不**替用户夹取值——拒绝发生在命令层，
+   * 而不是静默改成一个别的大小。
+   */
+  async setModelContextWindow(tier: ModelTier, contextWindow: number): Promise<void> {
+    await this.#updateActiveProfile(tier, (m) => ({ ...m, contextWindow }))
+  }
+
+  /**
+   * 把某个档位指到另一个模型（`/model use`）。
+   *
+   * **保留既有 assignment 的其余字段**（`fallbackModelRefs`、`maxCostPerTurn`、
+   * `enabled`）——换模型不等于清空回退策略和成本上限。此前适配器重建整条
+   * assignment 时会静默丢掉 `maxCostPerTurn`，那是另一条需要修的路径
+   * （见 `CommandHostAdapter.updateConfig`）。
+   *
+   * `fallbackModelRefs` 跨 provider 保留是有意的：回退列表本就允许指向别的
+   * provider，清空它属于"顺手改掉用户配置"。
+   */
+  async assignTierModel(tier: ModelTier, providerId: string, modelId: string): Promise<void> {
+    await this.configStore.update((current) => {
+      const existing = current.tier_assignments.find((t) => t.tier === tier)
+      const next: TierAssignment = {
+        ...(existing ?? { tier, enabled: true, fallbackModelRefs: [] }),
+        tier,
+        modelRef: { providerId, modelId },
+      }
+      return {
+        ...current,
+        tier_assignments: [...current.tier_assignments.filter((t) => t.tier !== tier), next],
+      }
+    })
+  }
+
+  /**
+   * 「档位 → 它当前指向的 `ModelProfile` → 改它」，三个 setter 共用。
+   *
+   * ⚠️ **找不到目标就抛错，不静默返回。**
+   *
+   * 早先这里 `if (!assignment) return`：档位不存在、或档位指向的 profile 已经
+   * 不在配置里时，写入被**无声丢弃**，调用方照样拿到一个"成功"。
+   * 这与 ADR 0004 D9 修掉的那个问题是同一族——"你让我改东西，我什么也没改，
+   * 而且不告诉你"。命令层已经在调它之前用 `findPrimaryModel` 挡了一道，
+   * 所以正常路径上不会看到这个错误；它挡住的是并发删除档位、
+   * 以及"配置里留着一个指向已删 profile 的悬空分配"这类状态。
+   *
+   * 抛错同时保证**不会误改别的模型**：检查在写之前，没有任何 profile 被触碰。
+   */
+  async #updateActiveProfile(
+    tier: ModelTier,
+    update: (profile: ModelProfile) => ModelProfile,
+  ): Promise<void> {
     const doc = await this.configStore.read()
     const assignment = doc.tier_assignments.find((t) => t.tier === tier)
-    if (!assignment) return
+    if (!assignment)
+      throw new AgentError({
+        code: ErrorCode.MODEL_NOT_FOUND,
+        message: `tier ${tier} has no assignment`,
+        source: 'app',
+        context: { tier },
+      })
     const { providerId, modelId } = assignment.modelRef
-    await this.configStore.update((current) => ({
+    const updated = await this.configStore.update((current) => ({
       ...current,
       model_profiles: current.model_profiles.map((m) =>
-        m.providerId === providerId && m.id === modelId
-          ? {
-              ...m,
-              ...(patch.thinkingEnabled === undefined
-                ? {}
-                : { thinkingEnabled: patch.thinkingEnabled }),
-              ...(patch.reasoningEffort === undefined
-                ? {}
-                : { reasoningEffort: patch.reasoningEffort }),
-            }
-          : m,
+        m.providerId === providerId && m.id === modelId ? update(m) : m,
       ),
     }))
+    // 档位存在但指向的 profile 不在配置里（悬空分配）：上面的 map 一个都没改。
+    // 同样是"没写成"，同样不能报成功。
+    if (!updated.model_profiles.some((m) => m.providerId === providerId && m.id === modelId))
+      throw new AgentError({
+        code: ErrorCode.MODEL_NOT_FOUND,
+        message: `tier ${tier} points at a missing model: ${providerId}/${modelId}`,
+        source: 'app',
+        context: { tier, providerId, modelId },
+      })
   }
 
   /** 待回答的提问。 */

@@ -106,6 +106,13 @@ class FakeHost implements CommandHost {
   updateModelPreferences(): Promise<void> {
     return Promise.resolve()
   }
+  // `/init` 不写档位模型、也不改上下文窗口。
+  assignTierModel(): Promise<void> {
+    throw new Error('init.test.ts 的用例不应写档位模型')
+  }
+  setModelContextWindow(): Promise<void> {
+    throw new Error('init.test.ts 的用例不应改上下文窗口')
+  }
   publish(): Promise<void> {
     return Promise.resolve()
   }

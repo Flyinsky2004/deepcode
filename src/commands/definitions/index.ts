@@ -20,6 +20,13 @@ import { ErrorCode } from '../../core/errors.js'
 import { CommandRegistry } from '../registry.js'
 import { CommandResultCode, type CommandDefinition, type CommandResult } from '../types.js'
 import { createInitCommand } from './init.js'
+import { createModelCommand } from './model.js'
+import {
+  createContextModeCommand,
+  createEffortCommand,
+  createReasoningCommand,
+  createThinkingCommand,
+} from './model-preferences.js'
 import { createWorkwithCommand } from './workwith.js'
 
 /** 生成一条"诚实的降级"命令。 */
@@ -173,48 +180,6 @@ function languageCommand(): CommandDefinition {
   }
 }
 
-/** `/model` —— 查看/设置档位到模型的分配。 */
-function modelCommand(): CommandDefinition {
-  return {
-    name: 'model',
-    description: '查看或设置档位模型',
-    parameters: {
-      positionals: [
-        { name: 'action', required: false, description: 'use', schema: z.literal('use') },
-        { name: 'tier', required: false, description: '档位名', schema: z.string() },
-        { name: 'ref', required: false, description: 'provider/model', schema: z.string() },
-      ],
-    },
-    interrupt: 'never',
-    // 会写全局配置 —— 只允许本机 principal
-    permission: { kind: 'local-principal' },
-    auditEvent: 'command_received',
-    idempotency: { kind: 'read-only' },
-    persistResult: false,
-    execute: async (ctx): Promise<CommandResult> => {
-      const config = await ctx.host.readConfig()
-      if (ctx.args['action'] !== 'use') {
-        const lines = config.tiers.map((t) => `${t.tier} → ${t.providerId}/${t.modelId}`)
-        return {
-          ok: true,
-          code: CommandResultCode.PANEL,
-          text: lines.length === 0 ? '尚未配置任何档位' : `当前档位分配：\n${lines.join('\n')}`,
-          data: { kind: 'model_panel', tiers: config.tiers, models: config.models },
-        }
-      }
-      // `use` 分支需要 `resolveModelRef` 的消歧与能力校验，属于 Phase 6 的
-      // 后续增量；先明确报未实现，而不是写一个不校验的版本。
-      return {
-        ok: false,
-        code: CommandResultCode.NOT_AVAILABLE,
-        text: '设置档位模型尚未实现（需要 provider/model 消歧与能力校验）',
-        errorCode: ErrorCode.COMMAND_NOT_AVAILABLE,
-        data: { subsystem: 'model assignment', phase: 'Phase 6 后续' },
-      }
-    },
-  }
-}
-
 /**
  * 构建内置命令注册表。
  *
@@ -233,7 +198,16 @@ export function createBuiltinCommandRegistry(): CommandRegistry {
     clearCommand(),
     compactCommand(),
     languageCommand(),
-    modelCommand(),
+    createModelCommand(),
+
+    // 四条模型偏好命令曾是"诚实降级"，等的是 runtime 侧消费
+    // `ModelRequest.thinking`。那一步已完成（见 `core/provider.ts` 的
+    // `thinkingConfigFor` 与 `runtime/agent-runtime.ts` 的请求构造），
+    // 配置改动现在真的会改变发出的请求，所以它们可以开放写入口了。
+    createThinkingCommand(),
+    createReasoningCommand(),
+    createEffortCommand(),
+    createContextModeCommand(),
 
     // 诚实降级：这些命令指向尚未实现的子系统。
     // 它们**存在**（用户在补全列表里能看到、能理解为什么不可用），
@@ -260,36 +234,13 @@ export function createBuiltinCommandRegistry(): CommandRegistry {
       name: 'api',
       description: '管理 provider',
       subsystem: 'provider 管理界面',
-      phase: 'Phase 6 后续',
-    }),
-    unavailableCommand({
-      name: 'thinking',
-      description: '开关思考',
-      subsystem: '思考开关的运行时消费',
-      // 配置侧已就绪（ModelProfile.thinkingEnabled），但 runtime 构造
-      // ModelRequest 时**从不发送 thinking 字段** —— 只改配置不产生任何
-      // 行为变化，是"欺骗性的空操作"。
-      phase: 'runtime 侧尚未消费 ModelRequest.thinking',
-    }),
-    unavailableCommand({
-      name: 'reasoning',
-      description: '设置思考强度',
-      subsystem: '思考强度的运行时消费',
-      phase: 'runtime 侧尚未消费 ModelRequest.thinking',
-    }),
-    unavailableCommand({
-      name: 'effort',
-      description: '设置思考档位',
-      subsystem: '思考档位的运行时消费',
-      phase: 'runtime 侧尚未消费 ModelRequest.thinking',
-    }),
-    unavailableCommand({
-      name: '1M',
-      description: '切换 1M 上下文',
-      subsystem: '1M 上下文切换',
-      // parts/09 §9.2：开启但模型不支持时必须拒绝，不能静默降级。
-      // 这需要先有"当前档位模型的能力快照"，属 Phase 6 后续。
-      phase: 'Phase 6 后续',
+      // ⚠️ 这一条**不是**"还没排到"，而是**刻意的推迟**，理由见 ADR 0004 D10：
+      // 旧语法 `/api add deepseek <明文 API key>` 把密钥放进命令行参数，
+      // 与 parts/09 §9.1「API key 不得出现在日志、事件、导出文件、URL 或
+      // 前端响应中」直接冲突；而给 provider 管理设计一套安全的输入路径
+      // （SecretRef 表单 / 连接测试 / 脱敏展示）是独立的一项工作。
+      // 在此之前，用户通过编辑 `~/.deepcode/config.json` 添加 provider。
+      phase: '需要先决定 SecretRef 输入方式（见 ADR 0004 D10）',
     }),
   ])
   return registry

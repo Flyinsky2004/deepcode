@@ -199,6 +199,17 @@ export interface CommandHost {
     tier: ModelTier,
     patch: { readonly thinkingEnabled?: boolean; readonly reasoningEffort?: string },
   ): Promise<void>
+  /**
+   * 把某个档位指到另一个模型（`/model use`）。
+   *
+   * 与 `updateConfig` 分开是有意的：改档位是**领域动作**（`parts/09` §9.3 要求
+   * 保存时校验模型存在、已启用且能力满足），而 `updateConfig` 是给「改一个设置项」
+   * 用的通用回写。走通用回写意味着命令层要自己拼整条 `tier_assignments`，
+   * 顺手丢掉 `fallbackModelRefs` / `maxCostPerTurn` 只是时间问题。
+   */
+  assignTierModel(tier: ModelTier, providerId: string, modelId: string): Promise<void>
+  /** 改某个档位所用模型的上下文窗口（`/1M`）。能力校验由命令层做。 */
+  setModelContextWindow(tier: ModelTier, contextWindow: number): Promise<void>
 
   // ── 事件与审计 ────────────────────────────────────────────────
   publish(input: {
@@ -253,6 +264,16 @@ export interface CommandConfigView {
     readonly supports1MContext: boolean
     readonly contextWindow: number
     readonly maxOutputTokens: number
+    /**
+     * 思考开关（**运行偏好**，不是能力声明）。
+     *
+     * 与 `supportsThinking` 并存不是冗余：前者是"用户要不要它思考"，
+     * 后者是"模型能不能思考"。`/thinking` 读前者、校验后者；
+     * 缺省（字段不存在）按关闭处理，见 ADR 0004 D3。
+     */
+    readonly thinkingEnabled?: boolean
+    /** 思考强度偏好。折算为 `thinking.budgetTokens`，见 `THINKING_BUDGET_BY_EFFORT`。 */
+    readonly reasoningEffort?: string
   }[]
   readonly tiers: readonly {
     readonly tier: ModelTier

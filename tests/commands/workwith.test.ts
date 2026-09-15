@@ -3,100 +3,11 @@ import { describe, expect, it } from 'vitest'
 import { CommandRegistry } from '../../src/commands/registry.js'
 import { createWorkwithCommand } from '../../src/commands/definitions/workwith.js'
 import { ModelRefFailure, checkCapability, resolveModelRef } from '../../src/commands/model-ref.js'
-import {
-  CommandResultCode,
-  type CommandConfigView,
-  type CommandHost,
-} from '../../src/commands/types.js'
+import { CommandResultCode, type CommandHost } from '../../src/commands/types.js'
+// 配置视图夹具与新增的四条模型命令共用一份（见 fixture.ts 的说明）。
+import { LOCAL, SESSION, makeConfig as config } from './fixture.js'
 import { ErrorCode } from '../../src/core/errors.js'
-import type { PrincipalId, SessionId, TurnId } from '../../src/core/ids.js'
-
-const LOCAL = 'local' as PrincipalId
-const SESSION = 's1' as SessionId
-
-const config = (over: Partial<CommandConfigView> = {}): CommandConfigView => ({
-  providers: [
-    { id: 'p_deepseek', name: 'DeepSeek', enabled: true, hasSecret: true },
-    { id: 'p_openai', name: 'OpenAI', enabled: true, hasSecret: true },
-    { id: 'p_off', name: 'Disabled', enabled: false, hasSecret: true },
-    { id: 'p_nokey', name: 'NoKey', enabled: true, hasSecret: false },
-    { id: 'p_spaced', name: 'My Provider', enabled: true, hasSecret: true },
-  ],
-  models: [
-    {
-      id: 'v4-flash',
-      providerId: 'p_deepseek',
-      displayName: 'v4-flash',
-      enabled: true,
-      supportsTools: true,
-      supportsThinking: false,
-      supports1MContext: false,
-      contextWindow: 128_000,
-      maxOutputTokens: 8_000,
-    },
-    {
-      id: 'gpt-6-astra',
-      providerId: 'p_openai',
-      displayName: 'gpt-6-astra',
-      enabled: true,
-      supportsTools: true,
-      supportsThinking: true,
-      supports1MContext: true,
-      contextWindow: 1_000_000,
-      maxOutputTokens: 32_000,
-    },
-    {
-      id: 'chat-only',
-      providerId: 'p_deepseek',
-      displayName: 'chat-only',
-      enabled: true,
-      supportsTools: false,
-      supportsThinking: false,
-      supports1MContext: false,
-      contextWindow: 32_000,
-      maxOutputTokens: 4_000,
-    },
-    {
-      id: 'off-model',
-      providerId: 'p_deepseek',
-      displayName: 'off-model',
-      enabled: false,
-      supportsTools: true,
-      supportsThinking: false,
-      supports1MContext: false,
-      contextWindow: 32_000,
-      maxOutputTokens: 4_000,
-    },
-    {
-      // 给 p_nokey 配一个模型，否则解析阶段就会 MODEL_NOT_FOUND，
-      // 根本走不到凭据检查那一步
-      id: 'nokey-model',
-      providerId: 'p_nokey',
-      displayName: 'nokey-model',
-      enabled: true,
-      supportsTools: true,
-      supportsThinking: false,
-      supports1MContext: false,
-      contextWindow: 32_000,
-      maxOutputTokens: 4_000,
-    },
-    {
-      id: 'm',
-      providerId: 'p_spaced',
-      displayName: 'm',
-      enabled: true,
-      supportsTools: true,
-      supportsThinking: false,
-      supports1MContext: false,
-      contextWindow: 32_000,
-      maxOutputTokens: 4_000,
-    },
-  ],
-  tiers: [],
-  settings: {},
-  raw: {},
-  ...over,
-})
+import type { SessionId, TurnId } from '../../src/core/ids.js'
 
 describe('resolveModelRef', () => {
   it('按 canonical 形式解析', () => {
@@ -227,6 +138,14 @@ class FakeHost implements CommandHost {
   }
   updateModelPreferences(): Promise<void> {
     return Promise.resolve()
+  }
+  // `/workwith` 只建立一次性 override，**不碰全局档位分配**——
+  // 这正是它和 `/model use` 的分界。用例若发现这里被调用，说明语义被破坏了。
+  assignTierModel(): Promise<void> {
+    throw new Error('/workwith 不应修改全局档位分配')
+  }
+  setModelContextWindow(): Promise<void> {
+    throw new Error('/workwith 不应修改上下文窗口')
   }
   publish(input: { type: string; data: unknown }): Promise<void> {
     this.published.push({ type: input.type, data: input.data })

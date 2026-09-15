@@ -419,15 +419,38 @@ describe('AgentApplication：模型偏好的可选字段', () => {
     return { app, dir }
   }
 
-  it('未分配的档位直接跳过，不抛错也不误改别的模型', async () => {
+  /**
+   * 未分配的档位 → **抛 `MODEL_NOT_FOUND`**，不是静默跳过。
+   *
+   * 早先这里 `return`：写入被无声丢弃而调用方拿到"成功"。
+   * 与 ADR 0004 D9 修掉的是同一族问题（"让我改东西，什么也没改，还不告诉我"）。
+   * 命令层在调用前已用 `findPrimaryModel` 挡了一道，所以正常路径看不到这个错误；
+   * 它挡住的是并发删除档位、以及指向已删 profile 的悬空分配。
+   *
+   * 这条用例同时守住"不误改别的模型"——检查在写之前发生。
+   */
+  it('未分配的档位抛 MODEL_NOT_FOUND，且不误改别的模型', async () => {
     const { app } = await build()
     const before = await app.configStore.read()
 
-    await app.updateModelPreferences(ModelTier.FAST, { thinkingEnabled: true })
+    await expect(
+      app.updateModelPreferences(ModelTier.FAST, { thinkingEnabled: true }),
+    ).rejects.toMatchObject({ code: ErrorCode.MODEL_NOT_FOUND })
 
     const after = await app.configStore.read()
-    // 没有任何 profile 被改动
     expect(after.model_profiles).toEqual(before.model_profiles)
+    app.dispose()
+  })
+
+  it('档位指向一个已被删除的 profile 时同样抛错（悬空分配）', async () => {
+    const { app } = await build()
+    const before = await app.configStore.read()
+
+    await expect(app.setModelContextWindow(ModelTier.FAST, 1_000_000)).rejects.toMatchObject({
+      code: ErrorCode.MODEL_NOT_FOUND,
+    })
+
+    expect((await app.configStore.read()).model_profiles).toEqual(before.model_profiles)
     app.dispose()
   })
 

@@ -10,7 +10,38 @@
  * 只有唯一命中才接受。
  */
 
+import { ModelTier } from '../core/provider.js'
 import type { CommandConfigView } from './types.js'
+
+/**
+ * 各档位对模型的**能力要求**。
+ *
+ * ⚠️ 这张表**只写规格明说的那一条**：`parts/09` §9.3 要求「保存配置时必须校验
+ * 模型存在、已启用且能力满足该档位要求（**例如** implementation 必须
+ * supportsTools）」。规格没有为 exploration / planning / writing / review / fast
+ * 规定要求，所以这里**不发明**——把"我猜 review 也该支持工具"写进校验，
+ * 会让一个规格允许的配置被本实现单方面拒绝。
+ *
+ * 这不会放行注定失败的配置：`ModelRouter.resolveCandidate`
+ * （`src/providers/router.ts:87`）在每个 turn 上仍按 `TaskIntent.requiresTools`
+ * 重新校验，失败返回 `MODEL_CAPABILITY_UNAVAILABLE`。
+ */
+export const TIER_REQUIRES_TOOLS: Readonly<Record<ModelTier, boolean>> = {
+  [ModelTier.EXPLORATION]: false,
+  [ModelTier.PLANNING]: false,
+  [ModelTier.IMPLEMENTATION]: true,
+  [ModelTier.WRITING]: false,
+  [ModelTier.REVIEW]: false,
+  [ModelTier.FAST]: false,
+}
+
+/** 档位名 → `ModelTier`；不是合法档位时返回 `undefined`。 */
+export function asModelTier(value: unknown): ModelTier | undefined {
+  return typeof value === 'string' &&
+    (Object.values(ModelTier) as readonly string[]).includes(value)
+    ? (value as ModelTier)
+    : undefined
+}
 
 export type ModelRefResolution =
   | {

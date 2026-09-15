@@ -164,6 +164,7 @@ describe('事件判定', () => {
       'compact_end',
       'compact_start',
       'error',
+      'model_route_changed',
       'permission_required',
       'skill_resolved',
       'text',
@@ -176,8 +177,20 @@ describe('事件判定', () => {
     ])
   })
 
-  it('恰好 13 种事件', () => {
-    expect(Object.values(RuntimeEventType)).toHaveLength(13)
+  /**
+   * 13 → 14。
+   *
+   * `model_route_changed` 是 ADR 0002 §3 冻结事件集之后**唯一**新增的一种
+   * （ADR 0004 D8），依据是 `parts/09` §6.1 与 §9.5 都要求把路由决策写进事件。
+   * 这条断言刻意写成精确数字：事件集是有意冻结的契约，静默增删必须让测试红。
+   */
+  it('恰好 14 种事件', () => {
+    expect(Object.values(RuntimeEventType)).toHaveLength(14)
+  })
+
+  it('model_route_changed 是通知类事件，不是终止信号', () => {
+    expect(isTerminalEvent(makeEvent(RuntimeEventType.MODEL_ROUTE_CHANGED))).toBe(false)
+    expect(requiresResolution(makeEvent(RuntimeEventType.MODEL_ROUTE_CHANGED))).toBe(false)
   })
 })
 

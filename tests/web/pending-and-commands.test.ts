@@ -245,6 +245,8 @@ describe('命令：HTTP 往返', () => {
         }),
       updateConfig: () => Promise.resolve(),
       updateModelPreferences: () => Promise.resolve(),
+      assignTierModel: () => Promise.resolve(),
+      setModelContextWindow: () => Promise.resolve(),
       publish: () => Promise.resolve(),
       getIdempotency: () => Promise.resolve(undefined),
       putIdempotency: () => Promise.resolve(),

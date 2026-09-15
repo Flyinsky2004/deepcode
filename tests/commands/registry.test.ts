@@ -53,6 +53,15 @@ class FakeHost implements CommandHost {
   updateModelPreferences(): Promise<void> {
     return Promise.resolve()
   }
+  // 这两条属于 `/model use` / `/1M` 的领域动作，本文件的用例不该碰到它们。
+  // 写成抛错而不是静默空实现——空实现会让"命令悄悄没写配置"这类缺陷
+  // 在测试里表现为通过。
+  assignTierModel(): Promise<void> {
+    throw new Error('registry.test.ts 的用例不应写档位模型')
+  }
+  setModelContextWindow(): Promise<void> {
+    throw new Error('registry.test.ts 的用例不应改上下文窗口')
+  }
   publish(input: { type: string; data: unknown }): Promise<void> {
     this.published.push({ type: input.type, data: input.data })
     return Promise.resolve()

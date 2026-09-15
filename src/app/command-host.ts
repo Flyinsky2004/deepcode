@@ -137,6 +137,11 @@ export class CommandHostAdapter implements CommandHost {
         supports1MContext: m.supports1MContext,
         contextWindow: m.contextWindow,
         maxOutputTokens: m.maxOutputTokens,
+        // 运行偏好（可缺省）。缺省与 `false` 在存储里是**不同的**：
+        // 前者表示"从未设置过"，后者表示"用户明确关掉了"。视图如实透出这个
+        // 区别，由 `thinkingConfigFor` / ADR 0004 D3 决定怎么解释。
+        ...(m.thinkingEnabled === undefined ? {} : { thinkingEnabled: m.thinkingEnabled }),
+        ...(m.reasoningEffort === undefined ? {} : { reasoningEffort: m.reasoningEffort }),
       })),
       tiers: doc.tier_assignments.map((t) => ({
         tier: t.tier,
@@ -157,13 +162,19 @@ export class CommandHostAdapter implements CommandHost {
     await this.#app.updateConfigRaw((doc) => ({
       ...doc,
       app_settings: { ...doc.app_settings, ...after.settings },
-      tier_assignments: after.tiers.map((t) => ({
-        tier: t.tier,
-        modelRef: { providerId: t.providerId, modelId: t.modelId },
-        enabled: t.enabled,
-        fallbackModelRefs:
-          doc.tier_assignments.find((d) => d.tier === t.tier)?.fallbackModelRefs ?? [],
-      })),
+      tier_assignments: after.tiers.map((t) => {
+        // ⚠️ 必须在**既有 assignment 上合并**，不能按视图字段重建。
+        // 视图只暴露 tier/providerId/modelId/enabled 四项，重建会把
+        // `maxCostPerTurn` 之类没进视图的字段静默清掉——此前每次 `/language`
+        // 写设置都会触发一次（`/language` 也会走到这条回写路径）。
+        const existing = doc.tier_assignments.find((d) => d.tier === t.tier)
+        return {
+          ...(existing ?? { tier: t.tier, fallbackModelRefs: [] }),
+          tier: t.tier,
+          modelRef: { providerId: t.providerId, modelId: t.modelId },
+          enabled: t.enabled,
+        }
+      }),
     }))
   }
 
@@ -172,6 +183,14 @@ export class CommandHostAdapter implements CommandHost {
     patch: { readonly thinkingEnabled?: boolean; readonly reasoningEffort?: string },
   ): Promise<void> {
     await this.#app.updateModelPreferences(tier, patch)
+  }
+
+  async assignTierModel(tier: ModelTier, providerId: string, modelId: string): Promise<void> {
+    await this.#app.assignTierModel(tier, providerId, modelId)
+  }
+
+  async setModelContextWindow(tier: ModelTier, contextWindow: number): Promise<void> {
+    await this.#app.setModelContextWindow(tier, contextWindow)
   }
 
   // ── 事件与审计 ──────────────────────────────────────────────────

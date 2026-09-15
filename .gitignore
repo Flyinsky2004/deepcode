@@ -16,6 +16,10 @@ coverage/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+# 启动与调试配置入库：它们描述的是"怎么跑这个项目"，不是个人偏好，
+# 分享出去能省掉每个人各拼一遍启动命令。
+!.vscode/launch.json
+!.vscode/settings.json
 
 # oh-my-claudecode 会话状态（工具状态，非项目内容）
 .omc/

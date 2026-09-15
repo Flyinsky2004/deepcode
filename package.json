@@ -19,6 +19,7 @@
     "dist"
   ],
   "scripts": {
+    "dev": "tsx scripts/dev-cli.ts",
     "build": "tsc -p tsconfig.build.json && node scripts/copy-static.mjs",
     "typecheck": "tsc --noEmit",
     "css:build": "tailwindcss -i src/clients/web/styles/input.css -o src/clients/web/static/styles.css --minify",
@@ -50,6 +51,7 @@
     "ink-testing-library": "^4.0.0",
     "prettier": "^3.9.6",
     "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.13",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.70.0",
     "vitest": "^5.0.0"

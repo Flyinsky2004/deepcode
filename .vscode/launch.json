@@ -1,0 +1,71 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // TUI（默认界面）。按 F5 即可运行，断点可直接打在 src/**/*.ts。
+      //
+      // 为什么绕开脚本直接拼 node + tsx：`.vscode` 里无法表达
+      // `pnpm dev` 这层包装，而 `node --import tsx ...` 在不同包管理器下的
+      // 解析结果不一致，调试时容易得到"模块找不到"这种与代码无关的报错。
+      // 直接固定到 node + tsx 的入口最稳。
+      "name": "TUI（开发模式）",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/tsx/dist/cli.mjs",
+      "args": ["${workspaceFolder}/scripts/dev-cli.ts"],
+      "console": "integratedTerminal",
+      // TUI 的渲染结果必须直接落到终端；被 debug adapter 捕获的话
+      // Ink 的重绘与按键回显都会失效。
+      "outputCapture": "std",
+      "skipFiles": ["<node_internals>/**"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      // Web UI。启动后终端会打印访问地址与一次性 token，
+      // 在浏览器里粘贴 token 完成登录。
+      "name": "Web UI（开发模式，默认 3210）",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/tsx/dist/cli.mjs",
+      "args": ["${workspaceFolder}/scripts/dev-cli.ts", "--web-ui"],
+      "console": "integratedTerminal",
+      "outputCapture": "std",
+      "skipFiles": ["<node_internals>/**"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      // Web UI + 自定义端口与认证方式。改 args 里的取值即可，
+      // 合法组合受 parts/09 §1.1 的监听策略约束（例如 public 不允许 --auth none）。
+      "name": "Web UI（自定义 --port / --auth / --listen）",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/tsx/dist/cli.mjs",
+      "args": [
+        "${workspaceFolder}/scripts/dev-cli.ts",
+        "--web-ui",
+        "--port",
+        "8080",
+        "--listen",
+        "local",
+        "--auth",
+        "token"
+      ],
+      "console": "integratedTerminal",
+      "outputCapture": "std",
+      "skipFiles": ["<node_internals>/**"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      // 只跑当前打开的测试文件。Vitest 需要走它自己的 runner，
+      // 不能用上面的入口。
+      "name": "当前测试文件（vitest）",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run", "${relativeFile}"],
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

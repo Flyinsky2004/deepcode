@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "conversations": [
+    {
+      "id": "f41adbd7-7d8f-4aa7-8a77-4b4223239c99",
+      "title": "Web 会话",
+      "total_output_tokens": 0,
+      "last_input_tokens": 0,
+      "compacted_message_count": 0,
+      "current_turn": 0,
+      "status": "active",
+      "parent_conversation_id": "",
+      "agent_type": "",
+      "principal_id": "218e4ca5-0a3d-4e6f-b83f-708eab4eb116",
+      "created_at": "2026-09-15T14:41:52.916Z",
+      "updated_at": "2026-09-15T14:41:52.916Z"
+    }
+  ],
+  "messages": [],
+  "runtime": {
+    "schema_version": 1,
+    "revision": 0,
+    "turns": [],
+    "permission_requests": [],
+    "permission_resolutions": [],
+    "user_input_requests": [],
+    "tool_executions": [],
+    "idempotency": [
+      {
+        "key": "web:218e4ca5-0a3d-4e6f-b83f-708eab4eb116:create-session:fd0a3fc9-e8aa-48bd-967e-c01ad6155bea",
+        "operation": "web:create-session",
+        "requestHash": "4e3de5a69b1a9f98a73250faa357f2a362ba492864a0ad7edbcdaa31c9a46312",
+        "response": {
+          "sessionId": "f41adbd7-7d8f-4aa7-8a77-4b4223239c99"
+        },
+        "createdAt": "2026-09-15T14:41:52.929Z"
+      }
+    ],
+    "events": []
+  }
+}

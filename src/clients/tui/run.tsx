@@ -1,5 +1,9 @@
+/** @jsxRuntime automatic @jsxImportSource react */
 /**
  * TUI 入口：装配 → 渲染 → 优雅关闭。
+ *
+ * ⚠️ 首行 pragma 是 JSX 运行时声明，理由见 `app.tsx` 同名说明——删掉会让
+ * `pnpm dev` 以 `React is not defined` 失败。
  *
  * 对应旧实现的 `run()`（`app.py:2433-2435`）与 `__main__.py`。区别是装配顺序
  * 反了过来：旧实现是"App 在 `compose()` 里边构造引擎"（`compose()` 有 4 个

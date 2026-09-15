@@ -1,5 +1,13 @@
+/** @jsxRuntime automatic @jsxImportSource react */
 /**
  * Ink 视图层（`compose()` 的布局树，`app.py:317-336`）。
+ *
+ * ⚠️ **上一行的 pragma 不是注释，删了会让 `pnpm dev` 启动失败。**
+ * `tsconfig.json` 的 `jsx: react-jsx` 只对 `tsc`（`pnpm build`）生效；
+ * `tsx`（开发期直跑源码）不读该选项，默认按 classic 运行时生成
+ * `React.createElement`，于是报 `ReferenceError: React is not defined`——
+ * 报错点在渲染期，看起来像依赖缺失，实际是 JSX 运行时选错。
+ * 这两个 pragma 是 esbuild 与 tsc 都认的每文件声明，故在此显式钉住。
  *
  * 这个文件**只做渲染**：所有状态都在 `TuiController` 里，所有判定都在
  * `keys.ts` / `input.ts` / `events.ts` 里。它做的三件事是：

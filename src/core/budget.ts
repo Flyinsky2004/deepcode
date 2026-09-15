@@ -132,18 +132,36 @@ export class BudgetTracker {
   #modelCalls = 0
   #toolCalls = 0
   #inputTokens = 0
+  #cumulativeInputTokens = 0
   #outputTokens = 0
   #cost = 0
 
-  constructor(budget: AgentBudget, clock: { nowMs(): number }) {
+  constructor(
+    budget: AgentBudget,
+    clock: { nowMs(): number },
+    restored?: BudgetConsumption,
+    cumulativeInputTokens?: number,
+  ) {
     this.#budget = budget
     this.#clock = clock
-    this.#startedAtMs = clock.nowMs()
+    this.#startedAtMs = clock.nowMs() - (restored?.wallTimeMs ?? 0)
+    if (restored) {
+      this.#modelCalls = restored.modelCalls
+      this.#toolCalls = restored.toolCalls
+      this.#inputTokens = restored.inputTokens
+      this.#cumulativeInputTokens = cumulativeInputTokens ?? restored.inputTokens
+      this.#outputTokens = restored.outputTokens
+      this.#cost = restored.cost
+    }
   }
 
   /** 本 tracker 使用的预算上限。 */
   get budget(): AgentBudget {
     return this.#budget
+  }
+
+  get cumulativeInputTokens(): number {
+    return this.#cumulativeInputTokens
   }
 
   /** 已消耗的预算快照。 */
@@ -179,6 +197,7 @@ export class BudgetTracker {
    */
   recordUsage(usage: { readonly inputTokens: number; readonly outputTokens: number }): void {
     this.#inputTokens = usage.inputTokens
+    this.#cumulativeInputTokens += usage.inputTokens
     this.#outputTokens += usage.outputTokens
   }
 
@@ -220,11 +239,11 @@ export class BudgetTracker {
       }
     }
 
-    if (this.#inputTokens >= this.#budget.maxInputTokens) {
+    if (this.#cumulativeInputTokens >= this.#budget.maxInputTokens) {
       return {
         dimension: BudgetDimension.INPUT_TOKENS,
         limit: this.#budget.maxInputTokens,
-        consumed: this.#inputTokens,
+        consumed: this.#cumulativeInputTokens,
       }
     }
 
@@ -264,7 +283,7 @@ export class BudgetTracker {
       1 - this.#modelCalls / this.#budget.maxModelCalls,
       1 - this.#toolCalls / this.#budget.maxToolCalls,
       1 - this.#elapsedMs() / this.#budget.maxWallTimeMs,
-      1 - this.#inputTokens / this.#budget.maxInputTokens,
+      1 - this.#cumulativeInputTokens / this.#budget.maxInputTokens,
       1 - this.#outputTokens / this.#budget.maxOutputTokens,
     ]
 

@@ -4,14 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 仓库现状
 
-**本仓库目前只有文档，没有任何代码。** 没有 `package.json` / `tsconfig.json`，因此**当前没有可运行的构建、lint 或测试命令**——不要假装它们存在，也不要凭空发明命令。
+**Phase 0–5（运行时核心）已实现；持续补充全量覆盖率和真实 endpoint 验收。**
+
+已完成：`src/core` 契约、`src/storage` 持久化/恢复、`src/providers` Anthropic 流、
+`src/tools` 权限与内置工具、`src/runtime` Agent loop/Context/Compact。
+`src/skills`、`src/subagents`、`src/mcp`、`src/clients` 仍按 `progess.md` 排期。
 
 工作内容是：在 TypeScript 中把旧的 Python 项目 FlyinChat 复刻为一个可跨客户端、跨模型运行的本地 Agent。
 
 - 规格：`docs/REWRITE_SPEC.md`（总纲）+ `docs/rewrite-spec/parts/01..09-*.md`（子系统）
 - 实施清单：`progess.md`（注意：文件名拼写少一个 `r`，不是 `progress.md`）
+- 架构决策：`docs/adr/`（**已冻结的契约决策，改动前先读**）
 - `.omc/` 是 oh-my-claudecode 工具的会话状态，**不是本项目内容**，不要编辑或提交它。
-- 工程骨架属于 Phase 0 的第一项工作；其验收标准是 `npm test` 可运行、`import` runtime 不依赖 TUI。在那之前不要写依赖具体构建链的代码。
+
+当前进度与下一步见 `progess.md` 的「当前状态」与对应 Phase 段落。
 
 ## 文档权威顺序（冲突时以此为准）
 
@@ -56,7 +62,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 复刻必须保持的边界：**UI 只能发 `UserMessage` / `CommandRequest` / `PermissionResolution` / `CancelRequest`，只能消费事件流，不得直接改会话、权限或工具状态**（`parts/09` §1）。
 
-计划中的目录结构（`progess.md` Phase 0）：`src/core`、`src/storage`、`src/providers`、`src/tools`、`src/skills`、`src/subagents`、`src/mcp`、`src/clients`。
+目录结构（`src/core` 已落地，其余按 Phase 顺序建）：
+`src/core`（契约层，已完成）、`src/storage`、`src/providers`、`src/tools`、`src/skills`、
+`src/subagents`、`src/mcp`、`src/clients`。
+
+## 常用命令
+
+包管理器是 **pnpm**（`npm` 亦可，`npm test` 已验证可用）。Node >= 22。
+
+```bash
+pnpm install
+pnpm check          # 一条命令跑完 typecheck + lint + format:check + test（提交前必跑）
+
+pnpm typecheck      # tsc --noEmit
+pnpm test           # vitest run
+pnpm test:coverage  # 覆盖率（阈值 80%，当前 95.8%）
+pnpm lint           # ESLint（含类型化规则）
+pnpm format         # Prettier 格式化
+pnpm build          # 产出 dist/
+
+# 运行单个测试
+pnpm vitest run tests/core/ids.test.ts
+pnpm vitest run -t "子代理使用 subagent_turn_ 前缀"
+```
+
+**测试约束**：每个 `src/core/*.ts` 模块必须有同名 `tests/core/*.test.ts`，
+`tests/acceptance/phase0.test.ts` 会强制检查这一条，并静态扫描 import 以确保
+内核不依赖 UI/框架/SDK。往 `src/core` 加文件时必须同步加测试，否则 `pnpm test` 失败。
 
 ## 实施顺序与约束
 

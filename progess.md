@@ -2,15 +2,19 @@
 
 本文是 TypeScript 本地 Agent 的实施清单。每个阶段完成后才能进入下一阶段；如果实现与旧 Python 行为冲突，兼容读取按 `docs/rewrite-spec/parts/01..08`，新协议按 `docs/rewrite-spec/parts/09-typescript-agent-standard.md`。
 
+**已冻结的决策不在此重复**：工具链选型见 `docs/adr/0001-engineering-stack.md`，
+契约层的命名约定、状态机、事件集合、规格冲突取舍见 `docs/adr/0002-core-contracts.md`。
+改动这些决策前先读 ADR。
+
 ## 当前状态
 
 - [x] 完成旧项目规格阅读和缺陷盘点
 - [x] 增加跨实现 Agent 标准
 - [x] 增加 Web UI 启动、监听和安全规范
 - [x] 增加 Anthropic-only provider、模型档位和 `/workwith` 规范
-- [~] 建立 TypeScript 工程骨架（工程配置、目录、`src/core` 基础契约已完成；接口与模型定义进行中）
-- [ ] 实现运行时核心
-- [ ] 实现模型、工具、权限和持久化
+- [x] 建立 TypeScript 工程骨架（Phase 0 完成，含 `src/core` 全部契约；见下方 Phase 0 段落）
+- [x] 实现运行时核心（Phase 1–5）
+- [x] 实现模型、工具、权限和持久化（Phase 1–5）
 - [ ] 实现 TUI / Web UI
 - [ ] 实现 Skill、Sub-agent、MCP
 - [ ] 完成跨模型和恢复测试
@@ -50,19 +54,42 @@
 - [x] 所有公共协议都有单元测试和序列化测试（15/15 模块有同名测试文件；
       往返测试见 `tests/core/serialization.test.ts`）
 
-当前规模：17 个测试文件、247 个测试、覆盖率 95.8%（语句）/ 91.1%（分支）。
+当前规模：19 个测试文件、264 个测试；`pnpm check` 已通过。全量覆盖率命令仍低于 80% 门槛（后续质量门禁阶段继续补齐）。
 
-## Phase 1：存储、事件和恢复
+### Phase 0 产出物
+
+| 位置 | 内容 |
+|---|---|
+| `src/core/`（15 个模块） | 品牌类型与 ID、时间与可注入时钟、错误码与分类、Result、统一预算、事件信封与 `EventSink`、Zod 校验基础设施、CJK 感知 token 估算、领域模型、Turn 状态机与 13 种事件、工具与权限契约、Provider 契约、`ContextEnvelope` 与 `WorkingMemory`、取消传播 |
+| `tests/core/`（15 个文件） | 每个模块一个同名测试文件 |
+| `tests/acceptance/phase0.test.ts` | 把上述三项验收写成可执行断言 |
+| `tests/core/serialization.test.ts` | 持久化实体的序列化往返（验收明列项） |
+| `docs/adr/0001`、`0002` | 工具链选型；契约冻结决策与规格冲突取舍 |
+
+### Phase 0 的三处有意偏离（务必先读再动手）
+
+1. **数据目录为 `.deepcode`**，不与旧项目 `.flyinchat` 共用（ADR 0001 决策 7）。
+   文件内部结构仍逐字兼容，但路径不同——`parts/01` 里写的 `~/.flyinchat/...`
+   应理解为 `.deepcode` 下的对应文件。
+2. **`TurnPhase` 迁移表是本实现推导的**，规格全文未给迁移边（ADR 0002 §5）。
+   若 `parts/09` 后续补充官方迁移表，以官方为准并更新。
+3. **已移除 `reasoning` 与 `incomplete_tool_call` 事件**（ADR 0002 §3）。
+   连带后果：`incomplete_tool_call_limit_reached` 终止路径不可达。
+   若将来重新支持 OpenAI 兼容端点，需一并加回。
+
+## Phase 1：存储、事件和恢复（已实现）
+
+> 基础存储、原子写入、跨进程锁、事件去重和本地恢复扫描已落地。
 
 ### 工作项
 
-- [ ] 实现 provider/model/tier 全局配置文件
-- [ ] 实现 workspace session 和 transcript 存储
-- [ ] 使用临时文件、fsync、rename 实现原子写入
-- [ ] 实现 append-only runtime event log
-- [ ] 实现 schema version 和迁移入口
-- [ ] 实现 active messages、compact boundary、tool execution record 查询
-- [ ] 记录 `sessionId`、`turnId`、`toolCallId`、`principalId`、`subagentSessionId`
+- [x] 实现 provider/model/tier 全局配置文件
+- [x] 实现 workspace session 和 transcript 存储
+- [x] 使用临时文件、fsync、rename 实现原子写入
+- [x] 实现 append-only runtime event log
+- [x] 实现 schema version 和迁移入口
+- [x] 实现 active messages、compact boundary、tool execution record 查询
+- [x] 记录 `sessionId`、`turnId`、`toolCallId`、`principalId`、`subagentSessionId`
 
 ### 验收
 
@@ -70,38 +97,42 @@
 - 重启后可以恢复未完成 turn、pending permission 和 unknown tool execution
 - 重复写入相同 event/request 不产生重复状态
 
-## Phase 2：Provider、模型和档位
+## Phase 2：Provider、模型和档位（已实现）
+
+> Anthropic SSE、SecretRef、路由、能力校验和暂时性故障 fallback 已落地；真实官方 endpoint 验收仍需用户凭据。
 
 ### 工作项
 
-- [ ] 只实现 Anthropic Messages API 请求和 SSE 流
-- [ ] 实现 provider 配置：name、baseUrl、secret reference
-- [ ] 实现一个 provider 多模型
-- [ ] 实现 `provider/model` canonical reference 和展示名
-- [ ] 实现模型能力声明：tools、thinking、vision、1M context、token limits
-- [ ] 实现连接测试和 secret 校验
-- [ ] 实现 exploration、planning、implementation、writing、review、fast 档位
-- [ ] 实现 capability check、预算和 fallback
-- [ ] 每个 turn 固定 model snapshot
+- [x] 只实现 Anthropic Messages API 请求和 SSE 流
+- [x] 实现 provider 配置：name、baseUrl、secret reference
+- [x] 实现一个 provider 多模型
+- [x] 实现 `provider/model` canonical reference 和展示名
+- [x] 实现模型能力声明：tools、thinking、vision、1M context、token limits
+- [x] 实现连接测试和 secret 校验
+- [x] 实现 exploration、planning、implementation、writing、review、fast 档位
+- [x] 实现 capability check、预算和 fallback
+- [x] 每个 turn 固定 model snapshot
 
 ### 验收
 
-- 至少通过一个 Anthropic 官方 endpoint 和一个 Anthropic-compatible endpoint
+- [ ] 至少通过一个 Anthropic 官方 endpoint 和一个 Anthropic-compatible endpoint（需要真实凭据；当前有本地 HTTP/SSE 夹具测试）
 - 同一模型可以被多个档位引用
 - 1M 不支持时不能静默降级
 - fallback 只对网络、429、暂时性 5xx 和 capability failure 生效
 
-## Phase 3：Turn 状态机和 Agent Loop
+## Phase 3：Turn 状态机和 Agent Loop（已实现）
+
+> 本地模型→工具循环、预算、取消、审批等待恢复、持久化 pending/unknown 执行和 fallback 已落地。
 
 ### 工作项
 
-- [ ] 实现 `starting → building_context → calling_model → ...` 状态迁移
-- [ ] 实现 user message、assistant text、thinking、tool call/result 的持久化
-- [ ] 实现统一 provider event normalization
-- [ ] 实现工具循环、最大调用次数、wall time、token 和 cost budget
-- [ ] 实现 AbortSignal 取消传播
-- [ ] 实现模型重试与工具执行重放保护
-- [ ] 实现 `TurnResult`：completed、partial、cancelled、failed、budget_exceeded、context_exceeded
+- [x] 实现 `starting → building_context → calling_model → ...` 状态迁移
+- [x] 实现 user message、assistant text、thinking、tool call/result 的持久化
+- [x] 实现统一 provider event normalization
+- [x] 实现工具循环、最大调用次数、wall time、token 和 cost budget
+- [x] 实现 AbortSignal 取消传播
+- [x] 实现模型重试、跨 provider fallback 与工具执行重放保护
+- [x] 实现 `TurnResult`：completed、partial、cancelled、failed、budget_exceeded、context_exceeded
 
 ### 验收
 
@@ -110,18 +141,20 @@
 - provider 重试不会重复执行不可幂等工具
 - 同一 session 同时提交第二个 turn 返回 `SESSION_BUSY`
 
-## Phase 4：工具协议和权限
+## Phase 4：工具协议和权限（已实现）
+
+> 内置工具、统一五层门控、路径真实路径检查、write-ahead 执行记录和进程组清理已落地。
 
 ### 工作项
 
-- [ ] 实现 ToolDescriptor、input validation、ToolResult、结构化错误码
-- [ ] 实现 ToolRegistry 版本号和动态 catalog
-- [ ] 实现统一 PermissionEngine
-- [ ] 实现 tool、parameter、workspace、session、risk 五层决策
-- [ ] 实现持久化 permission request、allow scope、过期和恢复
-- [ ] 实现 AbortSignal、timeout、output limit、unknown execution
-- [ ] 实现 file read/write/edit、glob、grep、bash、todo、ask user
-- [ ] 文件写入实现 hash 检查、备份、原子替换和回滚
+- [x] 实现 ToolDescriptor、input validation、ToolResult、结构化错误码
+- [x] 实现 ToolRegistry 版本号和动态 catalog
+- [x] 实现统一 PermissionEngine
+- [x] 实现 tool、parameter、workspace、session、risk 五层决策
+- [x] 实现持久化 permission request、allow scope、过期和恢复
+- [x] 实现 AbortSignal、timeout、output limit、unknown execution
+- [x] 实现 file read/write/edit、glob、grep、bash、todo、ask user
+- [x] 文件写入实现 hash 检查、备份、原子替换和回滚
 
 ### 验收
 
@@ -130,18 +163,20 @@
 - path traversal、外部修改、shell redirect 均不能绕过策略
 - 权限拒绝、超时、取消和运行时错误可区分
 
-## Phase 5：Context 和 Compact
+## Phase 5：Context 和 Compact（已实现）
+
+> ContextEnvelope、摘要边界、工具配对保护和 WorkingMemory 迁移已落地；全量覆盖率门槛仍需继续补齐。
 
 ### 工作项
 
-- [ ] 实现结构化 ContextEnvelope
-- [ ] 实现 provider/model 可替换的 token estimator
-- [ ] 实现 tool result budget 和输出截断
-- [ ] 实现 WorkingMemory
-- [ ] 实现 compact summary 和 versioned boundary
-- [ ] 实现 preflight、manual、reactive 三种 compact
-- [ ] compact 后重新生成 system、tools、runtime 和 skill guard
-- [ ] 保留未完成 tool call、权限决定、文件变更和用户约束
+- [x] 实现结构化 ContextEnvelope
+- [x] 实现 provider/model 可替换的 token estimator
+- [x] 实现 tool result budget 和输出截断
+- [x] 实现 WorkingMemory
+- [x] 实现 compact summary 和 versioned boundary
+- [x] 实现 preflight、manual、reactive 三种 compact
+- [x] compact 后重新生成 system、tools、runtime 和 skill guard
+- [x] 保留未完成 tool call、权限决定、文件变更和用户约束
 
 ### 验收
 

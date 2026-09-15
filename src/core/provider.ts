@@ -253,7 +253,7 @@ export interface ModelProvider {
    * ⚠️ 错误以**异常**抛出，不通过事件流传递。调用方用 `try/catch` 捕获，
    * 并用 `toAgentError()` 归一化为结构化错误码。
    */
-  stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent>
+  stream(request: ModelRequest, signal: AbortSignal): ModelStream
 
   /**
    * 探测连接与鉴权。
@@ -262,6 +262,11 @@ export interface ModelProvider {
    * 而不是只发一个普通文本请求——否则会在真正用到工具时才暴露问题。
    */
   probe(signal: AbortSignal): Promise<ProviderProbeResult>
+}
+
+/** Stream plus usage metadata captured when iteration completes. */
+export interface ModelStream extends AsyncIterable<ModelEvent> {
+  readonly usage?: TokenUsage
 }
 
 /** 连接探测结果。 */

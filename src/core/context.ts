@@ -122,6 +122,8 @@ export interface RuntimeState {
   readonly budget: AgentBudget
   /** 到目前为止的预算消耗，用于 UI 呈现与临近告警。 */
   readonly budgetConsumption: BudgetConsumption
+  /** Explicit protected working memory snapshot carried with each request. */
+  readonly workingMemory?: WorkingMemory
 }
 
 // ── 信封 ──────────────────────────────────────────────────────────

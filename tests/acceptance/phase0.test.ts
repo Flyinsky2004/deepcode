@@ -17,7 +17,9 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-const SRC_ROOT = new URL('../../src', import.meta.url).pathname
+// Phase 0's pure-core boundary remains dependency-free; runtime implementations
+// in storage/providers/tools are intentionally allowed to use IO and fetch.
+const SRC_ROOT = new URL('../../src/core', import.meta.url).pathname
 
 /** 递归收集 src 下全部 .ts 文件。 */
 async function collectSourceFiles(dir: string): Promise<string[]> {

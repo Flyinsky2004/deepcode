@@ -2,9 +2,8 @@
 
 跨客户端、跨模型的本地 Agent runtime。TypeScript 实现。
 
-> **当前状态：Phase 0（工程骨架与契约冻结）进行中。**
-> 本仓库处于从旧 Python 项目 FlyinChat 复刻的早期阶段，**尚无可用功能**。
-> 进度以 `progess.md` 为准。
+> **当前状态：运行时核心阶段（Phase 1–5）已实现；全量覆盖率门槛与真实 endpoint 验收待补。**
+> 已具备本地存储/恢复、Anthropic 流式 provider、turn 主循环、统一权限工具链和结构化上下文压缩；TUI/Web UI、Skill、Sub-agent、MCP 仍按进度表排期。
 
 ## 这是什么
 
@@ -68,9 +67,10 @@ pnpm vitest run -t "test name"
 src/
   core/         # 契约层：领域模型、接口、事件、错误码、ID、预算、Schema
                 # 不依赖任何具体实现，也不依赖 Node IO
-  storage/      # 持久化（Phase 1）
-  providers/    # Anthropic Messages API 接入（Phase 2）
-  tools/        # 工具运行时与权限引擎（Phase 4）
+  storage/      # 持久化、事件日志、恢复（Phase 1）
+  providers/    # Anthropic Messages API 与模型路由（Phase 2）
+  tools/        # 工具运行时、权限引擎与内置工具（Phase 4）
+  runtime/      # Agent loop、ContextEnvelope、Compact（Phase 3/5）
   skills/       # Skill 系统（Phase 8）
   subagents/    # 子代理（Phase 9）
   mcp/          # MCP 客户端（Phase 10）

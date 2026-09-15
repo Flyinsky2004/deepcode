@@ -74,6 +74,17 @@ export const MessageSubtype = {
   COMPACT_SUMMARY: 'compact_summary',
   /** 压缩边界元数据，**不送模型**。 */
   COMPACT_BOUNDARY: 'compact_boundary',
+  /**
+   * slash command 的执行结果（Phase 6），**不送模型**。
+   *
+   * 与 `SKILL_EVENT` / `PERMISSION_EVENT` 同类：是给人看的审计记录，
+   * `messageToApiFormat` 对它返回 `null`。
+   *
+   * ⚠️ 命令结果有**两条**呈现通道：落进 transcript 的这条消息，以及
+   * 事件流里的审计事件。**消息是历史的真相源**，事件通过 `messageId`
+   * 指向它；客户端按 id 去重，否则同一条结果会被画两次。
+   */
+  COMMAND_EVENT: 'command_event',
 } as const
 
 /** 消息子类型。 */
@@ -94,6 +105,7 @@ export const WRITABLE_MESSAGE_SUBTYPES: ReadonlySet<string> = new Set<MessageSub
   MessageSubtype.PERMISSION_EVENT,
   MessageSubtype.COMPACT_SUMMARY,
   MessageSubtype.COMPACT_BOUNDARY,
+  MessageSubtype.COMMAND_EVENT,
 ])
 
 /**
@@ -161,6 +173,18 @@ export interface Conversation {
   readonly parent_conversation_id: SessionId | ''
   /** 子代理角色名。主会话为空串。 */
   readonly agent_type: string
+  /**
+   * 会话所有者。
+   *
+   * Web UI 下每个连接映射到一个独立 `principalId`（`parts/09` §1.1），
+   * 会话、权限请求与事件都必须校验该 principal——**不能只凭 URL 里的
+   * session id 访问**。
+   *
+   * **空串表示"归属本机 principal"**：旧数据没有这个字段（读取时容错为 `''`），
+   * 由启动时的 `ensureLocalPrincipal()` 认领。这一点让旧 `chat.json`
+   * 无需迁移即可被本机用户继续使用。
+   */
+  readonly principal_id: string
   readonly created_at: IsoTimestamp
   readonly updated_at: IsoTimestamp
 }
@@ -174,6 +198,7 @@ export const NEW_CONVERSATION_DEFAULTS = {
   status: 'active',
   parent_conversation_id: '',
   agent_type: '',
+  principal_id: '',
 } as const satisfies Omit<Partial<Conversation>, 'id' | 'title' | 'created_at' | 'updated_at'>
 
 // ── content block ─────────────────────────────────────────────────

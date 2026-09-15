@@ -155,3 +155,35 @@ export function abortError(reason: CancelReason = CancelReason.USER): Error {
 export function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === 'AbortError'
 }
+
+/**
+ * 等待一个操作，但**在 signal 中止时立刻结束等待**。
+ *
+ * 与只把 signal 传给被调方的区别在于：对方可以不理会 signal。`withTimeout`
+ * 的 signal 是"建议"，而这里的 race 是"保证"——调用方不会因为被调方
+ * 不响应而无限等待。
+ *
+ * ⚠️ 提前返回**不代表对方停止了**。若被调方不响应 abort，它可能仍在后台运行
+ * 并产生副作用，此时副作用是否发生是**不可知**的。
+ */
+export async function abortable<T>(operation: PromiseLike<T>, signal: AbortSignal): Promise<T> {
+  const promise = Promise.resolve(operation)
+  // 先挂拒绝处理，避免已中止时产生未处理的拒绝。
+  const aborted = new Promise<never>((_resolve, reject) => {
+    if (signal.aborted) reject(abortError())
+  })
+  if (signal.aborted)
+    return Promise.race([promise, aborted]).then(() => {
+      throw abortError()
+    })
+  let onAbort: () => void = () => undefined
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(abortError())
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([promise, cancelled])
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
+}

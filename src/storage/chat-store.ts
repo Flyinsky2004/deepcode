@@ -14,6 +14,12 @@ import {
   type PermissionRequest,
   type PermissionResolution,
 } from '../core/tool.js'
+import {
+  UserInputRequestStatus,
+  type PersistedUserInputRequest,
+  type UserInputRequest,
+  type UserInputResolution,
+} from '../core/input.js'
 import { ACTIVE_PHASES, canTransition, TurnPhase } from '../core/turn.js'
 import { systemClock, type Clock } from '../core/time.js'
 import { type AppPaths } from './paths.js'
@@ -35,6 +41,7 @@ const EMPTY_RUNTIME: RuntimeDocument = {
   revision: 0,
   turns: [],
   permission_requests: [],
+  user_input_requests: [],
   permission_resolutions: [],
   tool_executions: [],
   idempotency: [],
@@ -65,6 +72,8 @@ function normalizeConversation(value: unknown): Conversation | undefined {
       value['parent_conversation_id'] ?? value['parentConversationId'],
     ) as SessionId | '',
     agent_type: asString(value['agent_type'] ?? value['agentType']),
+    // 旧 `chat.json` 没有这个字段 → 空串，由 ensureLocalPrincipal() 在启动时认领。
+    principal_id: asString(value['principal_id'] ?? value['principalId']),
     created_at: asString(value['created_at'] ?? value['createdAt'], now),
     updated_at: asString(value['updated_at'] ?? value['updatedAt'], now),
   }
@@ -121,6 +130,10 @@ function normalizeRuntime(value: unknown): RuntimeDocument {
     permission_resolutions: asArray(value['permission_resolutions']).filter(
       isRecord,
     ) as unknown as readonly PersistedPermissionResolution[],
+    // 旧文件没有这个字段 → []，与其它 additive 扩展同样的容错策略
+    user_input_requests: asArray(value['user_input_requests']).filter(
+      isRecord,
+    ) as unknown as readonly PersistedUserInputRequest[],
     tool_executions: asArray(value['tool_executions']).filter(
       isRecord,
     ) as unknown as readonly PersistedToolExecution[],
@@ -172,6 +185,7 @@ export class ChatStore {
     title = 'New conversation',
     parentConversationId: SessionId | '' = '',
     agentType = '',
+    principalId = '',
   ): Promise<Conversation> {
     const now = this.clock.now()
     const conversation: Conversation = {
@@ -184,6 +198,7 @@ export class ChatStore {
       status: 'active',
       parent_conversation_id: parentConversationId,
       agent_type: agentType,
+      principal_id: principalId,
       created_at: now,
       updated_at: now,
     }
@@ -606,6 +621,76 @@ export class ChatStore {
       }
     })
   }
+  /** 记录一次待回答的提问。与权限请求的写入路径对称。 */
+  async addUserInputRequest(request: UserInputRequest): Promise<void> {
+    await this.update((doc) => {
+      if (doc.runtime.user_input_requests.some((r) => r.request.request_id === request.request_id))
+        return doc
+      return {
+        ...doc,
+        runtime: {
+          ...doc.runtime,
+          revision: doc.runtime.revision + 1,
+          user_input_requests: [
+            ...doc.runtime.user_input_requests,
+            {
+              request,
+              status: UserInputRequestStatus.PENDING_USER_INPUT,
+              answers: null,
+              resolved_at: null,
+              resolved_by: '',
+            },
+          ],
+        },
+      }
+    })
+  }
+
+  /** 写入用户作答。未回答的请求返回 `undefined`。 */
+  async resolveUserInput(
+    requestId: string,
+    resolution: UserInputResolution,
+    resolvedAt = this.clock.now(),
+  ): Promise<PersistedUserInputRequest | undefined> {
+    const doc = await this.read()
+    const existing = doc.runtime.user_input_requests.find((r) => r.request.request_id === requestId)
+    if (!existing) return undefined
+
+    const status =
+      resolution.answers === null
+        ? resolution.resolvedBy === 'system'
+          ? UserInputRequestStatus.EXPIRED
+          : UserInputRequestStatus.CANCELLED
+        : UserInputRequestStatus.ANSWERED
+
+    const updated: PersistedUserInputRequest = {
+      ...existing,
+      status,
+      answers: resolution.answers,
+      resolved_at: resolvedAt,
+      resolved_by: resolution.resolvedBy,
+    }
+    await this.update((current) => ({
+      ...current,
+      runtime: {
+        ...current.runtime,
+        revision: current.runtime.revision + 1,
+        user_input_requests: current.runtime.user_input_requests.map((r) =>
+          r.request.request_id === requestId ? updated : r,
+        ),
+      },
+    }))
+    return updated
+  }
+
+  /** 列出提问请求，可按会话过滤。 */
+  async listUserInputRequests(
+    sessionId?: SessionId,
+  ): Promise<readonly PersistedUserInputRequest[]> {
+    const all = (await this.read()).runtime.user_input_requests
+    return sessionId === undefined ? all : all.filter((r) => r.request.session_id === sessionId)
+  }
+
   async listPermissionRequests(sessionId?: SessionId): Promise<readonly PermissionRequest[]> {
     const values = (await this.read()).runtime.permission_requests
     return sessionId ? values.filter((r) => r.session_id === sessionId) : values
@@ -695,6 +780,31 @@ export class ChatStore {
         },
       }))
     }
+    // 提问请求的过期处理与权限对称：进程中断时遗留的待答问题必须被标记，
+    // 否则恢复后 UI 会一直显示一个早已无人等待的问卷。
+    const expiredInputs = doc.runtime.user_input_requests.filter(
+      (r) => r.status === UserInputRequestStatus.PENDING_USER_INPUT && r.request.expires_at <= now,
+    )
+    if (expiredInputs.length) {
+      await this.update((current) => ({
+        ...current,
+        runtime: {
+          ...current.runtime,
+          revision: current.runtime.revision + 1,
+          user_input_requests: current.runtime.user_input_requests.map((r) =>
+            expiredInputs.some((e) => e.request.request_id === r.request.request_id)
+              ? {
+                  ...r,
+                  status: UserInputRequestStatus.EXPIRED,
+                  resolved_by: 'system',
+                  resolved_at: this.clock.now(),
+                }
+              : r,
+          ),
+        },
+      }))
+    }
+
     const unknown = doc.runtime.tool_executions
       .filter((r) => r.status === ToolExecutionStatus.RUNNING)
       .map((r) => ({ ...r, status: ToolExecutionStatus.UNKNOWN, finishedAt: this.clock.now() }))
@@ -715,9 +825,19 @@ export class ChatStore {
       unfinishedTurns: doc.runtime.turns.filter((t) => ACTIVE_PHASES.has(t.phase)),
       pendingPermissions: doc.runtime.permission_requests.filter(
         (r) =>
-          (!expired.some((e) => e.request_id === r.request_id) &&
-            r.status === PermissionRequestStatus.CREATED) ||
-          r.status === PermissionRequestStatus.PENDING_USER_APPROVAL,
+          // ⚠️ `!expired` 必须同时约束两个状态。原先写成
+          // `(!expired && CREATED) || PENDING_USER_APPROVAL`，`||` 的优先级让
+          // `PENDING_USER_APPROVAL` 逃过过期检查：刚刚被上面标记成 EXPIRED 的
+          // 请求仍会出现在快照里，与刚落盘的磁盘状态自相矛盾，UI 会为它再弹一次
+          // 审批。与同函数下方的 `pendingUserInputs` 保持同一写法。
+          !expired.some((e) => e.request_id === r.request_id) &&
+          (r.status === PermissionRequestStatus.CREATED ||
+            r.status === PermissionRequestStatus.PENDING_USER_APPROVAL),
+      ),
+      pendingUserInputs: doc.runtime.user_input_requests.filter(
+        (r) =>
+          !expiredInputs.some((e) => e.request.request_id === r.request.request_id) &&
+          r.status === UserInputRequestStatus.PENDING_USER_INPUT,
       ),
       unknownExecutions: [
         ...allUnknown,

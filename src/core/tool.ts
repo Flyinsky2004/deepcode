@@ -458,6 +458,16 @@ export interface ToolSafetyClaim {
  * parts/09 §2 要求：**超时、取消和 UI 不可用均按 deny 处理**。
  * 因此实现必须保证：任何非批准的结果都返回 `DENY`，绝不"卡住不返回"。
  */
+/**
+ * 审批请求的默认有效期（毫秒）。
+ *
+ * 旧实现把这个 `120_000` 硬编码在工具执行器里（`expires_at` 的计算），
+ * 而 `parts/09` §3 与 `CLAUDE.md` 都要求阈值收进配置、不得散落在局部。
+ * 这里给出契约侧的默认值，执行层与运行时共用同一个来源；
+ * Phase 7 的 `AppPolicy` 会允许按配置覆盖。
+ */
+export const DEFAULT_PERMISSION_TIMEOUT_MS = 120_000
+
 export interface ApprovalService {
   /**
    * 请求审批。

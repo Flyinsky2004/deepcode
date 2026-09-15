@@ -1,7 +1,13 @@
 import { AgentError, ErrorCode, isTransient, toAgentError } from '../core/errors.js'
 import { BudgetTracker, DEFAULT_BUDGET, type AgentBudget } from '../core/budget.js'
 import { EMPTY_WORKING_MEMORY, type RuntimeState, renderSystemPrompt } from '../core/context.js'
-import { createEventId, type SessionId, type ToolCallId, type TurnId } from '../core/ids.js'
+import {
+  createEventId,
+  type PermissionRequestId,
+  type SessionId,
+  type ToolCallId,
+  type TurnId,
+} from '../core/ids.js'
 import { MessageRole, MessageSubtype } from '../core/models.js'
 import {
   type ModelProvider,
@@ -12,6 +18,7 @@ import {
 } from '../core/provider.js'
 import {
   RuntimeEventType,
+  type RuntimeEventData,
   type TurnResult,
   TurnPhase,
   TurnStatus,
@@ -19,10 +26,16 @@ import {
   canTransition,
   ACTIVE_PHASES,
 } from '../core/turn.js'
-import { PermissionMode, ToolExecutionStatus, type ToolResult } from '../core/tool.js'
+import {
+  DEFAULT_PERMISSION_TIMEOUT_MS,
+  PermissionMode,
+  ToolExecutionStatus,
+  type ToolResult,
+} from '../core/tool.js'
 import type { EventSink, RuntimeEventEnvelope } from '../core/events.js'
 import { systemClock, type Clock } from '../core/time.js'
 import type { ChatStore } from '../storage/chat-store.js'
+import { argsPreview } from '../storage/audit.js'
 import type { PersistedTurn } from '../storage/types.js'
 import type { ModelRouter } from '../providers/router.js'
 import type { ResolvedModelRoute } from '../providers/router.js'
@@ -36,7 +49,16 @@ export interface AgentRuntimeOptions {
   readonly chatStore: ChatStore
   readonly contextBuilder: ContextBuilder
   readonly toolExecutor: ToolExecutor
-  readonly eventSink?: EventSink
+  /**
+   * 事件出口。**必填**。
+   *
+   * 早先它是可选的、且运行时同时把事件写进 `chat.json`，于是漏传只是"少了一份
+   * 副本"。既然那份副本已移除（无任何读取方），`eventSink` 就成了**唯一**的
+   * 事件路径——再做成可选，漏传会变成"事件彻底消失"且没有任何编译期或运行期信号。
+   *
+   * 不需要事件的调用方请显式传 `NullEventSink`，把意图写出来。
+   */
+  readonly eventSink: EventSink
   readonly provider?: ModelProvider
   readonly model?: string
   readonly router?: ModelRouter
@@ -53,8 +75,11 @@ export interface AgentRuntimeOptions {
 export class AgentRuntime {
   readonly options: AgentRuntimeOptions
   readonly clock: Clock
+  /**
+   * 正在运行的 turn 所在的会话。`parts/09` §1.1：同一 session 默认只允许
+   * 一个 active turn，第二个请求返回 `SESSION_BUSY`。
+   */
   readonly busy = new Set<string>()
-  readonly sequence = new Map<string, number>()
   constructor(options: AgentRuntimeOptions) {
     this.options = options
     this.clock = options.clock ?? systemClock
@@ -254,10 +279,26 @@ export class AgentRuntime {
                   ? TurnPhase.BUDGET_EXCEEDED
                   : TurnPhase.FAILED
       if (phase !== finalPhase) {
-        // The frozen state machine routes budget exhaustion through finalizing;
-        // executing_tools has no direct completed/budget edge by design.
-        if (finalPhase === TurnPhase.BUDGET_EXCEEDED && phase === TurnPhase.EXECUTING_TOOLS) {
-          await transition(TurnPhase.CALLING_MODEL, 'budget checkpoint')
+        // 预算耗尽统一先绕行 `finalizing` 再落终态。
+        //
+        // 迁移表（`core/turn.ts` 的 `TRANSITIONS`）里能直接进 `budget_exceeded`
+        // 的只有 `calling_model` 与 `finalizing`，能进 `finalizing` 的只有
+        // `calling_model`。原先只对 `executing_tools` 做了特判，于是
+        // `building_context` / `compacting` / `awaiting_permission` /
+        // `awaiting_user_input` 走到这里都会抛 `INVALID_STATE_TRANSITION`
+        // ——而"provider 流卡死触发墙钟超时"这条最常见的路径，phase 正是
+        // `calling_model` 或 `building_context`，等于把纯资源限制报成了内部错误。
+        //
+        // 这里**不新增迁移边**，只用既有边组合出一条合法路径：
+        //   starting → building_context → calling_model → finalizing → budget_exceeded
+        // 其余活动阶段都已有直达 `calling_model` 的边。语义上也一致：`finalizing`
+        // 就是"预算耗尽后的收尾"，它本该是这条终态的唯一入口。
+        // 取舍详见 `docs/adr/0003-turn-budget-transitions.md`。
+        if (finalPhase === TurnPhase.BUDGET_EXCEEDED && phase !== TurnPhase.FINALIZING) {
+          if (phase === TurnPhase.STARTING)
+            await transition(TurnPhase.BUILDING_CONTEXT, 'budget checkpoint')
+          if (phase !== TurnPhase.CALLING_MODEL)
+            await transition(TurnPhase.CALLING_MODEL, 'budget checkpoint')
           await transition(TurnPhase.FINALIZING, 'budget exhausted')
         }
         await transition(finalPhase, reason ?? 'finished')
@@ -276,6 +317,14 @@ export class AgentRuntime {
         num_turns: numTurns,
         base_max_turns: tracker.budget.maxModelCalls,
         max_turns: tracker.budget.maxModelCalls,
+        current_max_turns: this.options.maxTurns ?? tracker.budget.maxModelCalls,
+        auto_continue_count: 0,
+        last_tool_error: lastToolError,
+        input_tokens: result.input_tokens,
+        output_tokens: result.output_tokens,
+        // 旧实现声明了 `cancelled` 却从不置真，而消费方（TUI/Web）正是靠它
+        // 区分"用户取消"与"执行失败"——例如决定是否重发排队中的 prompt。
+        ...(status === TurnStatus.CANCELLED ? { cancelled: true } : {}),
       })
       return result
     }
@@ -328,7 +377,7 @@ export class AgentRuntime {
           },
         })
       if (!provider || !model)
-        return finish(
+        return await finish(
           TurnStatus.FAILED,
           TerminalReason.ERROR,
           'No model configured. Add one with /api, then /model.',
@@ -430,13 +479,13 @@ export class AgentRuntime {
       }
       while (true) {
         if (runSignal.aborted) {
-          return wallTimeout.timedOut()
+          return await (wallTimeout.timedOut()
             ? finish(
                 TurnStatus.PARTIAL,
                 TerminalReason.BUDGET_EXCEEDED,
                 'budget exceeded: wallTime',
               )
-            : finish(TurnStatus.CANCELLED, TerminalReason.CANCELLED, null)
+            : finish(TurnStatus.CANCELLED, TerminalReason.CANCELLED, null))
         }
         const exhaustedBeforeCall = tracker.check()
         if (exhaustedBeforeCall && numTurns > 0) {
@@ -450,7 +499,7 @@ export class AgentRuntime {
             // A process may have stopped during the one allowed finalization call.
             // Resume that call once; a second attempt falls through to partial below.
           } else {
-            return finish(
+            return await finish(
               TurnStatus.PARTIAL,
               TerminalReason.BUDGET_EXCEEDED,
               `budget exceeded: ${exhaustedBeforeCall.dimension}`,
@@ -555,15 +604,19 @@ export class AgentRuntime {
             continue
           }
           if (e.code === ErrorCode.CONTEXT_EXCEEDED)
-            return finish(TurnStatus.CONTEXT_EXCEEDED, TerminalReason.CONTEXT_EXCEEDED, e.message)
+            return await finish(
+              TurnStatus.CONTEXT_EXCEEDED,
+              TerminalReason.CONTEXT_EXCEEDED,
+              e.message,
+            )
           if (runSignal.aborted)
-            return wallTimeout.timedOut()
+            return await (wallTimeout.timedOut()
               ? finish(
                   TurnStatus.PARTIAL,
                   TerminalReason.BUDGET_EXCEEDED,
                   'budget exceeded: wallTime',
                 )
-              : finish(TurnStatus.CANCELLED, TerminalReason.CANCELLED, null)
+              : finish(TurnStatus.CANCELLED, TerminalReason.CANCELLED, null))
           if (isTransient(e.code) && providerRetries < 2) {
             providerRetries += 1
             continue
@@ -605,7 +658,7 @@ export class AgentRuntime {
             })
             continue
           }
-          return finish(TurnStatus.FAILED, TerminalReason.ERROR, e.message)
+          return await finish(TurnStatus.FAILED, TerminalReason.ERROR, e.message)
         }
         const usage = typeof streamUsage !== 'undefined' ? streamUsage : undefined
         if (usage) tracker.recordUsage(usage)
@@ -621,11 +674,11 @@ export class AgentRuntime {
             agent_type: '',
           })
         if (toolCalls.length === 0)
-          return finalizationAttempted
+          return await (finalizationAttempted
             ? finish(TurnStatus.PARTIAL, TerminalReason.BUDGET_EXCEEDED, null)
-            : finish(TurnStatus.COMPLETED, TerminalReason.COMPLETED, null)
+            : finish(TurnStatus.COMPLETED, TerminalReason.COMPLETED, null))
         if (finalizationAttempted)
-          return finish(
+          return await finish(
             TurnStatus.PARTIAL,
             TerminalReason.FINALIZATION_TOOL_CALL,
             'finalization response requested tools',
@@ -733,33 +786,49 @@ export class AgentRuntime {
             content: result.content,
             error_code: result.error_code,
           })
+          // 这条分支只在**没有审批服务**时可达（executor 仅在 `!approvalService`
+          // 时返回 PERMISSION_REQUIRED）。它是"有 UI 在听但没有 broker"的兜底通知；
+          // 常规路径下审批事件由审批 broker 发出，因为它才拿得到权威的 request_id。
           if (result.error_code === ErrorCode.PERMISSION_REQUIRED)
             await this.emit(sessionId, turnId, RuntimeEventType.PERMISSION_REQUIRED, {
-              request_id:
-                typeof result.meta['request_id'] === 'string' ? result.meta['request_id'] : '',
+              request_id: (typeof result.meta['request_id'] === 'string'
+                ? result.meta['request_id']
+                : '') as PermissionRequestId,
               tool_name: call.name,
               tool_call_id: call.id,
               tool_input: call.input,
-              args_preview: JSON.stringify(call.input).slice(0, 1000),
-              risk_level: 'medium',
+              // 必须走脱敏的 argsPreview：`bash` 的 command 与 `file_write` 的
+              // content 都含在 call.input 里。Phase 7 起这个事件会被推送到
+              // 浏览器（--listen lan/public），原始参数会直接离开进程。
+              args_preview: argsPreview(call.input),
+              risk_level:
+                typeof result.meta['risk_level'] === 'string'
+                  ? result.meta['risk_level']
+                  : 'medium',
               reason: result.content,
-              expires_at: Date.now() + 120_000,
+              expires_at:
+                typeof result.meta['expires_at'] === 'number'
+                  ? result.meta['expires_at']
+                  : this.clock.nowMs() + DEFAULT_PERMISSION_TIMEOUT_MS,
             })
           tracker.recordToolCall()
           if (runSignal.aborted)
-            return wallTimeout.timedOut()
+            return await (wallTimeout.timedOut()
               ? finish(
                   TurnStatus.PARTIAL,
                   TerminalReason.BUDGET_EXCEEDED,
                   'budget exceeded: wallTime',
                 )
-              : finish(TurnStatus.CANCELLED, TerminalReason.CANCELLED, null)
-          if (result.error_code === 'USER_INPUT_REQUIRED')
-            return finish(TurnStatus.PARTIAL, TerminalReason.ERROR, 'user input required')
+              : finish(TurnStatus.CANCELLED, TerminalReason.CANCELLED, null))
+          // 这里原本有一条对 `USER_INPUT_REQUIRED` 的 `finish(PARTIAL, ERROR)`。
+          // 该分支已移除：`ToolExecutor` 现在会**消化**用户提问并产出正常的
+          // 工具结果（回灌答案或 `{"_timeout": true}`），因此 runtime 不会再
+          // 看到这个错误码。保留一条永不触发的终止路径只会增加状态机复杂度
+          // ——与 ADR 0002 §三 移除 `incomplete_tool_call` 的理由相同。
         }
         const exhausted = tracker.check()
         if (exhausted)
-          return finish(
+          return await finish(
             TurnStatus.PARTIAL,
             TerminalReason.BUDGET_EXCEEDED,
             `budget exceeded: ${exhausted.dimension}`,
@@ -767,7 +836,7 @@ export class AgentRuntime {
       }
     } catch (error) {
       const e = toAgentError(error, 'runtime')
-      return finish(
+      return await finish(
         wallTimeout.timedOut()
           ? TurnStatus.PARTIAL
           : signal.aborted
@@ -785,27 +854,37 @@ export class AgentRuntime {
     }
   }
 
-  private async emit<T>(
+  /**
+   * 发射一个运行时事件。
+   *
+   * ⚠️ **序号由 `EventSink` 分配，不是这里**。生产者传 `sequence: 0` 表示"未分配"；
+   * `EventLog.append` 会以 `lastSequence + 1` 覆写它并在磁盘上保持严格单调。
+   *
+   * 早先的实现自己维护 `sequence` Map 并**同时**写 `chatStore.appendEvent`
+   * 与 `eventSink.append`，带来两个问题：
+   * 1. 两份副本的序号由不同机制分配，`lastEventId` 补发无法确定该信任哪一份；
+   * 2. `chatStore` 的写入是"全文件 parse → 全量 stringify → fsync"，
+   *    而流式文本**每段**都发一个事件——一个 turn 内对多 MB 的 `chat.json`
+   *    做几十次全量重写。
+   *
+   * `chat.json` 里那份副本没有任何读取方（`RuntimeDocument.events` 只写不读），
+   * 因此这里只保留 `EventLog` 一条权威路径。
+   */
+  private async emit<T extends RuntimeEventType>(
     sessionId: SessionId,
     turnId: TurnId,
-    type: string,
-    data: T,
+    type: T,
+    data: RuntimeEventData[T],
   ): Promise<void> {
-    const persistedMax = (await this.options.chatStore.read()).runtime.events
-      .filter((e) => e.sessionId === sessionId)
-      .reduce((max, e) => Math.max(max, e.sequence), 0)
-    const sequence = Math.max(this.sequence.get(sessionId) ?? 0, persistedMax) + 1
-    this.sequence.set(sessionId, sequence)
     const event = {
       eventId: createEventId(),
-      sequence,
+      sequence: 0,
       type,
       timestamp: this.clock.now(),
       sessionId,
       turnId,
       data,
     } as RuntimeEventEnvelope
-    await this.options.chatStore.appendEvent(event)
-    await this.options.eventSink?.append(event)
+    await this.options.eventSink.append(event)
   }
 }

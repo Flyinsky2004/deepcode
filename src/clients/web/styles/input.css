@@ -1,0 +1,20 @@
+/*
+ * Tailwind 的**唯一**输入文件。
+ *
+ * 编译：`pnpm css:build` → `src/clients/web/static/styles.css`（产物入库）。
+ * 一致性检查：`pnpm css:check`（`pnpm check` 会跑）。
+ *
+ * ## 为什么要编译成静态 CSS
+ *
+ * CSP 是 `style-src 'self'`（**没有** `unsafe-inline`，见 `origin.ts`）。
+ * Tailwind 的 play CDN 会注入内联 `<style>`，在这条策略下会被浏览器直接拦掉；
+ * Tailwind 的运行时 class 生成器同理。所以样式必须**在构建期**变成静态文件。
+ *
+ * ## `@source` 为什么必须显式写
+ *
+ * v4 的自动内容探测以项目根为起点，会把 `tests/`、`docs/` 里的字符串也算进来，
+ * 生成一堆永远用不到的类。这里把它限定到真正会渲染的两个文件上。
+ */
+@import 'tailwindcss';
+
+@source '../static';

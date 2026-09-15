@@ -86,6 +86,18 @@ export interface ModelProfile {
   readonly inputCostPerMillion?: number
   readonly outputCostPerMillion?: number
   readonly enabled: boolean
+  /**
+   * 是否启用思考（运行偏好，**不是能力声明**）。
+   *
+   * 与 `supportsThinking` 的区别是本节最容易混的地方：
+   * `supportsThinking` 是"这个模型能不能思考"，由供应商与端点决定，
+   * 用户不能改；`thinkingEnabled` 是"这次要不要让它思考"，用户可以开关。
+   * `parts/09` §9.2 禁止把能力当开关写（不支持时不得静默降级），
+   * 所以两者必须分开存。
+   */
+  readonly thinkingEnabled?: boolean
+  /** 思考强度偏好。折算为 `thinking.budgetTokens` 时受 `maxOutputTokens` 约束。 */
+  readonly reasoningEffort?: string
 }
 
 /** 模型与供应商的组合引用。用于 turn 快照与审计。 */

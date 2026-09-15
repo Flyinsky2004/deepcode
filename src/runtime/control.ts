@@ -1,29 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises'
-import { abortError } from '../core/abort.js'
+import { abortable } from '../core/abort.js'
 
 /** 即使适配器没有响应取消，也结束调用方的等待；底层仍收到同一个 signal。 */
-export async function abortable<T>(operation: PromiseLike<T>, signal: AbortSignal): Promise<T> {
-  const promise = Promise.resolve(operation)
-  // 先挂拒绝处理，避免已取消时产生未处理的拒绝。
-  const aborted = new Promise<never>((_resolve, reject) => {
-    if (signal.aborted) reject(abortError())
-  })
-  if (signal.aborted)
-    return Promise.race([promise, aborted]).then(() => {
-      throw abortError()
-    })
-  let onAbort: () => void = () => {}
-  const cancelled = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(abortError())
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
-  try {
-    return await Promise.race([promise, cancelled])
-  } finally {
-    signal.removeEventListener('abort', onAbort)
-  }
-}
-
 export async function* cancellableStream<T>(
   source: AsyncIterable<T>,
   signal: AbortSignal,
@@ -45,3 +23,7 @@ export async function* cancellableStream<T>(
 export async function retryDelay(ms: number, signal: AbortSignal): Promise<void> {
   await delay(ms, undefined, { signal })
 }
+
+// `abortable` 的实现已移到 `core/abort.ts`（纯控制流工具，不该让 tools/ 依赖 runtime/）。
+// 这里 re-export 保持既有 import 路径可用；新代码请直接从 core/abort.js 取。
+export { abortable }

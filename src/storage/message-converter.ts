@@ -5,7 +5,8 @@ import { type ApiMessage, type ApiContentBlock } from '../core/provider.js'
 export function messageToApiFormat(message: Message): ApiMessage | null {
   if (
     message.subtype === MessageSubtype.PERMISSION_EVENT ||
-    message.subtype === MessageSubtype.SKILL_EVENT
+    message.subtype === MessageSubtype.SKILL_EVENT ||
+    message.subtype === MessageSubtype.COMMAND_EVENT
   )
     return null
   try {

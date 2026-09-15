@@ -15,7 +15,7 @@
 - [x] 建立 TypeScript 工程骨架（Phase 0 完成，含 `src/core` 全部契约；见下方 Phase 0 段落）
 - [x] 实现运行时核心（Phase 1–5）
 - [x] 实现模型、工具、权限和持久化（Phase 1–5）
-- [ ] 实现 TUI / Web UI
+- [x] 实现 TUI / Web UI（见下方「Phase 7 已完成」段）
 - [ ] 实现 Skill、Sub-agent、MCP
 - [ ] 完成跨模型和恢复测试
 
@@ -228,6 +228,70 @@
 - public 禁止无认证启动
 - Web UI 与 TUI 同时连接时事件、权限和 cancel 语义一致
 - WebSocket 断线重连不会丢失或重复 turn
+
+## Phase 7 已完成
+
+**TUI**（`src/clients/tui/`，Ink）、**Web UI**（`src/clients/web/`，`node:http` + `ws` + Tailwind 编译的静态页）
+与**组合根**（`src/app/`）均已落地，三端共用同一个 `AgentApplication`。
+验收（`tests/acceptance/phase7.test.ts`）：两端收到**同一** `sequence` 序列、任一方批准双方都收到
+`permission_resolved`、任一方取消双方都收到 `turn_end{cancelled:true}`、补发锚点失效时返回
+`EVENT_RESYNC_REQUIRED` 而非静默补发全量。
+
+### 实现前先修的三条不成立契约（都是**显式决策**，不是"顺手修好"）
+
+1. **装上审批/提问服务后事件消失。** `AgentRuntime` 只在 `error_code === PERMISSION_REQUIRED`
+   时发 `permission_required`，而 `ToolExecutor` **只在没有 `approvalService` 时**才返回该错误码
+   ——UI 一接上真实服务，事件就永远不再出现。现改由审批 broker 发出，并经 `EventLog` 持久化
+   （重连补发因此自动覆盖审批项）。
+2. **`ask_user_question` 不可达。** `user_input_required` 永不发出、`AWAITING_USER_INPUT` 永不进入，
+   `requiresResolution()` 的契约与实现不符。现由提问 broker 发事件，`ToolExecutor` 消化提问并
+   产出正常工具结果（回灌答案或 `{"_timeout": true}`）；runtime 侧的 `finish(PARTIAL, ERROR)`
+   分支已删除。
+3. **`EventLog` 成为事件的唯一持久化权威**（移除 `chat.json` 中无人读取、且每次流式增量都触发
+   全文件重写的副本）。`emit` 泛型化后暴露出 `turn_end` 漏发 token 等字段。
+
+### Phase 6 部分完成（`src/commands/`）
+
+契约层（`CommandDefinition` / `CommandHost` 端口 / 执行管线）、`/workwith` 与 model-ref 消歧
+已落地。内置 15 条命令中：**6 条真实现**（`/workwith` `/sessions` `/clear` `/compact`
+`/language` `/model` 只读分支）、**9 条诚实降级**（返回 `COMMAND_NOT_AVAILABLE` + 具体原因，
+不返回假数据、不用空列表假装成功）。
+
+**待补**：`/model use` 写分支；`/thinking` `/reasoning` `/effort` 需要在 runtime 里补
+`ModelRequest.thinking` 的消费（当前只改配置不产生行为变化，故明确报不可用）；
+`/init` 需从旧 Python 源码逐字转录初始化指令全文。
+
+### 已知限制
+
+- **覆盖率分支项未达 80% 门槛**（约 69%）。缺口全在既有代码（`providers/anthropic.ts` 60%、
+  `runtime/agent-runtime.ts` 等）；Phase 6/7 新增代码四项均高于阈值。**阈值未下调**。
+- `chat.json` 仍是全量重写（写放大），需独立 ADR 与迁移工具才能改为 append-only。
+
+## 覆盖率达标时发现的 8 个缺陷（已修）
+
+补测试到 80% 门槛的过程中撞见并逐条做了**显式决策**。全部判为**修正**，无一条标
+`// BUG-COMPAT`——因为旧项目里都不存在这些行为（新实现回归 / 笔误 / 实现疏漏），
+标成"保留旧行为"会误导后来人以为是为了兼容旧数据。
+
+| # | 缺陷 | 性质 |
+|---|---|---|
+| A1 | `globMatch()` 的四次 `replaceAll` 让 `**` 恒不匹配（`**/*.ts` 匹配不到任何路径），而 `glob` 的 description 自己就举了 `**/*.py` | **新实现回归**——`parts/04` §5.5 记明旧实现用 Python `Path.glob()`（双星递归）。改为单次遍历生成正则，从结构上消除"后一步重写前一步插入片段"的成因 |
+| A2 | 预算收尾抛穿并把 session 锁死：`finish()` 只给 `executing_tools` 特判了绕行，其余阶段 `transition()` 抛 `INVALID_STATE_TRANSITION`；且 `return finish(...)` 缺 `await`，拒绝绕过同层 `catch` → `submitMessage` 抛异常、turn 无 `result`、session 被 `SESSION_BUSY` 永久锁死 | 见 `docs/adr/0003-turn-budget-transitions.md` |
+| A3 | `recover()` 的 `\|\|` 优先级让 `PENDING_USER_APPROVAL` 逃过过期检查，快照与刚落盘的磁盘状态自相矛盾 | 括号笔误 |
+| A4 | `path-sandbox` 的悬空软链逃出工作区：`realpath` 抛的 `ENOENT` 被"叶子不存在→上溯父目录"的 catch 吞掉，写操作跟随链接在**工作区外**创建文件 | **路径逃逸（安全）** |
+| A5 | `validateProvider()` 对无法解析的 URL 兜底成 `new URL('http://invalid')`，使后续协议/用户名/查询串检查**全部落空** | 新增校验里的缺口：加了检查却没让它生效 |
+| A6 | 两个 broker 的 `#wait` 在 `signal.aborted` 时直接 resolve，不走 `#settle`、不广播，而 `onAbort` 路径是完整的 → 幽灵条目占着队列名额；已取消时还会先发 `resolved` 后发 `required`（顺序颠倒） | 同一条语义两份实现，其中一份漏了收尾 |
+| A7 | `mcp_*` 在 NORMAL/AUTO_EDIT 下被模式白名单先拒，风险段的 `mcp.risk-approval` **永远不可达** | 规则不可达——留一条永不触发的规则比没有更坏（同 ADR 0002 §三） |
+| A8 | `ToolExecutor` 的超时不会真正中断工具：`await tool.execute(...)` 是普通 await，`timedOut()` 在其后才检查 → 工具不理会 signal 就无限等待 | 超时形同虚设。改用 `abortable()` 保证**等待本身**在超时时结束 |
+
+**A2/A6 的连带发现**：A6 修复过程中一度让"已取消"路径先广播 `permission_resolved` 再广播
+`permission_required`（因为 `request()` 里 `#wait` 在 `publish` 之前执行）。最终修法是
+**已取消时干脆不发 `permission_required`**——UI 不该为一个已经结束的请求弹框。
+
+**A8 的已知限制**：`abortable` 只保证等待结束，**不代表工具停了**。不响应 abort 的工具可能
+仍在后台产生副作用，此时"副作用是否发生"不可知——按 ADR 0002 §六 该用 `UNKNOWN`，但那条
+路径目前只覆盖"进程中断"（`recover()` 把 `RUNNING` 改判 `UNKNOWN`）。当前仍记为 `FAILURE`，
+因为已向模型返回失败结果。**未静默改状态语义**，留待后续决策。
 
 ## Phase 8：Skills
 

@@ -81,6 +81,17 @@ function normalizeProfile(value: unknown): ModelProfile | undefined {
       ? {}
       : { outputCostPerMillion: asNum(value['outputCostPerMillion'], 0) }),
     enabled: asBool(value['enabled'], true),
+    // 运行偏好：与能力声明分开存（见 core/provider.ts 的 ModelProfile）。
+    // ⚠️ 本函数是**白名单式**的——这里不列出来的字段在读回时会被静默丢掉，
+    // 所以新增持久化字段必须同步加到这里，否则用户设置会在下次启动时消失。
+    ...(value['thinkingEnabled'] === undefined && value['thinking_enabled'] === undefined
+      ? {}
+      : { thinkingEnabled: asBool(value['thinkingEnabled'] ?? value['thinking_enabled'], false) }),
+    ...(value['reasoningEffort'] === undefined && value['reasoning_effort'] === undefined
+      ? {}
+      : {
+          reasoningEffort: asString(value['reasoningEffort'] ?? value['reasoning_effort']),
+        }),
   }
 }
 
@@ -254,11 +265,24 @@ export class ConfigStore {
   }
 
   private validateProvider(provider: StoredProvider): void {
+    // ⚠️ 解析失败必须**本身就是**一个校验错误。
+    //
+    // 早先这里 `catch { parsed = new URL('http://invalid') }`：兜底值恰好是个合法
+    // 的 http URL，于是后面所有检查（协议、用户名、查询串、`/v1/messages` 路径）
+    // **看起来都跑过了**，实际全部落空，`baseUrl: 'not a url'` 被原样写进配置。
+    // 新增的校验等于白写，错误被推迟到发请求时（fetch 抛 TypeError）。
     let parsed: URL
     try {
       parsed = new URL(provider.baseUrl)
-    } catch {
-      parsed = new URL('http://invalid')
+    } catch (cause) {
+      throw new AgentError(
+        {
+          code: ErrorCode.VALIDATION_FAILED,
+          message: 'provider baseUrl must be a valid absolute http(s) URL',
+          source: 'config',
+        },
+        { cause },
+      )
     }
     if (
       (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||

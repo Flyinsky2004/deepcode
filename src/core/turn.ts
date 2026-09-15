@@ -354,7 +354,12 @@ export interface ToolResultEvent extends TurnEventBase {
   }
 }
 
-/** skill 解析完成。 */
+/**
+ * skill 解析完成。
+ *
+ * ⚠️ **本实现暂不发射**：Skill 子系统属 Phase 8（`src/skills` 尚不存在）。
+ * 契约类型保留，因为它是 UI 绘制 skill 面板的既定接口。
+ */
 export interface SkillResolvedEvent extends TurnEventBase {
   readonly type: typeof RuntimeEventType.SKILL_RESOLVED
   readonly data: {
@@ -376,7 +381,17 @@ export interface CompactEndEvent extends TurnEventBase {
   readonly data: { readonly applied: boolean; readonly strategy: string }
 }
 
-/** 预算耗尽后自动续跑，抬高了 turn 预算上限。 */
+/**
+ * 预算耗尽后自动续跑，抬高了 turn 预算上限。
+ *
+ * ⚠️ **本实现不发射**，是**有意**的：旧项目那套"预算耗尽 → 追加预算 → 继续跑"
+ * 的三计数器逻辑没有被移植，本实现的续跑语义由 `maxTurns` 承担
+ * （`AgentRuntimeOptions.maxTurns`），且 `ContinuationLimits` 虽在
+ * `src/core/budget.ts` 中定义，运行时从未使用。
+ *
+ * 因此 `TurnEndEvent.data.auto_continue_count` 恒为 `0`。
+ * 契约类型保留是为了将来若真要移植该特性时不必改协议。
+ */
 export interface AutoContinueEvent extends TurnEventBase {
   readonly type: typeof RuntimeEventType.AUTO_CONTINUE
   readonly data: {
@@ -438,7 +453,16 @@ export interface TurnEndEvent extends TurnEventBase {
   }
 }
 
-/** 错误。**可能在没有 `turn_end` 的情况下单独出现**。 */
+/**
+ * 错误。**可能在没有 `turn_end` 的情况下单独出现**。
+ *
+ * ⚠️ **turn 之内的失败本实现不发这个事件**——它们统一走
+ * `finish()` → `turn_end{status: failed|cancelled|...}`，这样终止判定只有一条路径。
+ * 本事件的定位是 **turn 之外**的错误（会话级、传输层），Phase 6/7 也还没有生产者。
+ *
+ * 消费方仍必须把它当作**终止信号**：`isTerminalEvent()` 同时认 `turn_end` 与
+ * `error`，只等 `turn_end` 的客户端会在这些路径上永久挂起。
+ */
 export interface ErrorEvent extends TurnEventBase {
   readonly type: typeof RuntimeEventType.ERROR
   readonly data: { readonly message: string }
@@ -459,6 +483,20 @@ export type TurnStreamEvent =
   | UserInputRequiredEvent
   | TurnEndEvent
   | ErrorEvent
+
+/**
+ * 事件类型 → 其 `data` 载荷的形状。
+ *
+ * 从 `TurnStreamEvent` **派生**而非手工重复，因此新增事件类型时这里自动跟上。
+ *
+ * 用途：让发射点在**编译期**校验 `type` 与 `data` 的对应关系。此前 `emit` 的
+ * `type` 是 `string`、`data` 是自由泛型，两者毫无关联——于是 `turn_end` 事件
+ * 可以少发一半字段而编译照常通过（本实现就曾漏发 `input_tokens` /
+ * `output_tokens`，而状态栏正需要它们）。
+ */
+export type RuntimeEventData = {
+  [K in RuntimeEventType]: Extract<TurnStreamEvent, { type: K }>['data']
+}
 
 /**
  * 判断该事件是否表示 turn 已终止。
@@ -559,4 +597,5 @@ export const SUBTYPE_LABELS: Readonly<Record<MessageSubtype, string>> = {
   permission_event: '权限',
   compact_summary: '摘要',
   compact_boundary: '压缩边界',
+  command_event: '命令',
 }

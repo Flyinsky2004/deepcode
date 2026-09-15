@@ -53,6 +53,35 @@ export default tseslint.config(
     },
   },
   {
+    // 浏览器前端与构建脚本。
+    //
+    // 两者的共同点是**不在 tsconfig 的 project service 里**，类型化规则无法运行
+    // （会直接报"文件找不到"）。这里关掉类型化规则、保留基础规则——
+    // 直接 ignore 掉整个目录也行，但前端 JS 有 500 多行，值得留下拼写与未使用
+    // 变量这类检查。
+    //
+    // 前端还额外需要浏览器全局：`js.configs.recommended` 的 `no-undef`
+    // 不认识 `document` / `WebSocket`，不声明会把每一处都报成错误。
+    files: ['src/clients/web/static/**/*.js', 'scripts/**/*.mjs'],
+    extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: {
+      globals: {
+        document: 'readonly',
+        window: 'readonly',
+        location: 'readonly',
+        sessionStorage: 'readonly',
+        localStorage: 'readonly',
+        fetch: 'readonly',
+        WebSocket: 'readonly',
+        crypto: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        console: 'readonly',
+        process: 'readonly',
+      },
+    },
+  },
+  {
     // 测试文件放宽：允许断言用 any、允许 console
     files: ['tests/**/*.ts', 'src/**/*.test.ts'],
     rules: {

@@ -110,6 +110,53 @@ export const ErrorCode = {
   MCP_CIRCUIT_OPEN: 'MCP_CIRCUIT_OPEN',
 
   // ── 内部 ────────────────────────────────────────────────────────
+  // ── 事件流（Phase 7）────────────────────────────────────────────
+  /**
+   * 客户端给出的补发锚点已不在事件日志中（日志被截断、会话被重建，
+   * 或锚点来自另一个会话）。客户端必须重建视图后重新订阅。
+   *
+   * ⚠️ 不能用"补发全量"来兜底：那会让客户端把整个 transcript 重绘一遍，
+   * 表现为重复渲染，而 `parts/09` §1.1 要求重连**不丢失也不重复**。
+   */
+  EVENT_RESYNC_REQUIRED: 'EVENT_RESYNC_REQUIRED',
+  /**
+   * 订阅者出站队列溢出，连接被主动断开。
+   *
+   * **事件并未丢失**——客户端带 `lastEventId` 重连即可补齐。
+   * 主动断开而不是丢弃事件，是为了让"丢失"在协议上不可表达。
+   */
+  EVENT_STREAM_BACKPRESSURE: 'EVENT_STREAM_BACKPRESSURE',
+
+  // ── 命令 ────────────────────────────────────────────────────────
+  /**
+   * 命令存在，但它依赖的子系统尚未实现（Skill / Sub-agent / MCP / 可观测性）。
+   *
+   * 与 `INVALID_COMMAND_ARGUMENTS` 区分：那是"参数写错了"，这是"功能还没有"。
+   * **不得假装成功或返回空数据**。
+   */
+  COMMAND_NOT_AVAILABLE: 'COMMAND_NOT_AVAILABLE',
+
+  // ── Web 传输层（Phase 7）────────────────────────────────────────
+  /**
+   * 监听地址不符合 `--listen` 策略，或绑定失败。
+   *
+   * 出现此错误时**不得降级到更宽松的地址**（`parts/09` §1.1）——
+   * 调用方应当打印原因并退出，而不是重试。
+   */
+  WEB_LISTEN_FAILED: 'WEB_LISTEN_FAILED',
+  /** 缺少凭据、凭据错误，或凭据被放在了禁止的位置（URL query）。 */
+  WEB_AUTH_FAILED: 'WEB_AUTH_FAILED',
+  /** Origin / CSRF 校验未通过。 */
+  WEB_ORIGIN_REJECTED: 'WEB_ORIGIN_REJECTED',
+  /** 触发速率限制。 */
+  WEB_RATE_LIMITED: 'WEB_RATE_LIMITED',
+  /** 服务正在关闭，拒绝新请求。 */
+  WEB_SHUTTING_DOWN: 'WEB_SHUTTING_DOWN',
+  /** 请求体或 WebSocket 消息超过配置上限。 */
+  WEB_PAYLOAD_TOO_LARGE: 'WEB_PAYLOAD_TOO_LARGE',
+  /** 连接数达到上限。 */
+  WEB_CONNECTION_LIMIT: 'WEB_CONNECTION_LIMIT',
+
   /** 未被上面任何一类覆盖的内部错误。 */
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 } as const
@@ -131,6 +178,12 @@ export const ErrorCategory = {
   STORAGE: 'storage',
   SUBAGENT: 'subagent',
   MCP: 'mcp',
+  /** 事件流与补发（Phase 7）。 */
+  EVENT: 'event',
+  /** slash command（Phase 6）。 */
+  COMMAND: 'command',
+  /** Web 传输层：监听、鉴权、Origin、限流（Phase 7）。 */
+  WEB: 'web',
   INTERNAL: 'internal',
 } as const
 
@@ -183,6 +236,19 @@ export const ERROR_CATEGORY: Readonly<Record<ErrorCode, ErrorCategory>> = {
   [ErrorCode.MCP_CONNECTION_FAILED]: ErrorCategory.MCP,
   [ErrorCode.MCP_TIMEOUT]: ErrorCategory.MCP,
   [ErrorCode.MCP_CIRCUIT_OPEN]: ErrorCategory.MCP,
+
+  [ErrorCode.EVENT_RESYNC_REQUIRED]: ErrorCategory.EVENT,
+  [ErrorCode.EVENT_STREAM_BACKPRESSURE]: ErrorCategory.EVENT,
+
+  [ErrorCode.COMMAND_NOT_AVAILABLE]: ErrorCategory.COMMAND,
+
+  [ErrorCode.WEB_LISTEN_FAILED]: ErrorCategory.WEB,
+  [ErrorCode.WEB_AUTH_FAILED]: ErrorCategory.WEB,
+  [ErrorCode.WEB_ORIGIN_REJECTED]: ErrorCategory.WEB,
+  [ErrorCode.WEB_RATE_LIMITED]: ErrorCategory.WEB,
+  [ErrorCode.WEB_SHUTTING_DOWN]: ErrorCategory.WEB,
+  [ErrorCode.WEB_PAYLOAD_TOO_LARGE]: ErrorCategory.WEB,
+  [ErrorCode.WEB_CONNECTION_LIMIT]: ErrorCategory.WEB,
 
   [ErrorCode.INTERNAL_ERROR]: ErrorCategory.INTERNAL,
 }

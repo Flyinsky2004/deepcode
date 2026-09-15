@@ -28,14 +28,17 @@
     "removeComments": false,
     "importHelpers": false,
 
-    /* 本项目不使用装饰器与 JSX（内核不得依赖 UI 框架） */
+    /* 内核不得依赖 UI 框架：装饰器仍禁用。
+       JSX 供 src/clients/tui 使用；`react-jsx` 而非 `preserve`——
+       `preserve` 会让 vitest 的 esbuild 把 JSX 原样留在产物里，
+       运行时报 `Unexpected token '<'`（见 ADR 0001 探针法）。 */
     "experimentalDecorators": false,
-    "jsx": "preserve",
+    "jsx": "react-jsx",
 
     /* 严格但不阻塞迭代 */
     "skipLibCheck": true,
     "noEmitOnError": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx", "vitest.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

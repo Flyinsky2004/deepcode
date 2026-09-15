@@ -10,6 +10,7 @@ import type {
   ToolExecutionRecord,
   ToolResult,
 } from '../core/tool.js'
+import type { PersistedUserInputRequest } from '../core/input.js'
 import type { PhaseTransition, TurnPhase, TurnResult } from '../core/turn.js'
 
 /** 全局档位配置。新配置使用稳定的 provider/model ID。 */
@@ -115,6 +116,15 @@ export interface RuntimeDocument {
   readonly revision: number
   readonly turns: readonly PersistedTurn[]
   readonly permission_requests: readonly PermissionRequest[]
+  /**
+   * 待回答 / 已回答的提问请求（`ask_user_question`）。
+   *
+   * **additive 字段**：旧 `chat.json` 没有它，`normalizeRuntime` 容错为 `[]`。
+   * 与权限请求并列而不是塞进 `permission_requests`——两者的超时语义不同
+   * （权限超时按 deny，提问超时让 turn 继续跑），混在一起会让恢复逻辑
+   * 无法判断该重新弹审批还是重新提问（ADR 0002 §四）。
+   */
+  readonly user_input_requests: readonly PersistedUserInputRequest[]
   readonly permission_resolutions: readonly PersistedPermissionResolution[]
   readonly tool_executions: readonly PersistedToolExecution[]
   readonly idempotency: readonly IdempotencyRecord[]
@@ -134,5 +144,12 @@ export interface ChatDocument {
 export interface RecoverySnapshot {
   readonly unfinishedTurns: readonly PersistedTurn[]
   readonly pendingPermissions: readonly PermissionRequest[]
+  /**
+   * 仍未被回答的提问请求。
+   *
+   * 与 `pendingPermissions` 分开报告：恢复时一个要重新弹审批对话框，
+   * 另一个要重新弹问卷，UI 的处理路径不同。
+   */
+  readonly pendingUserInputs: readonly PersistedUserInputRequest[]
   readonly unknownExecutions: readonly PersistedToolExecution[]
 }

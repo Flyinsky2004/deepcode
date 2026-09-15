@@ -19,8 +19,11 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-static.mjs",
     "typecheck": "tsc --noEmit",
+    "css:build": "tailwindcss -i src/clients/web/styles/input.css -o src/clients/web/static/styles.css --minify",
+    "css:check": "node scripts/check-css.mjs",
+    "copy-static": "node scripts/copy-static.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -28,17 +31,25 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test"
+    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm css:check && pnpm test"
   },
   "dependencies": {
+    "ink": "^7.1.1",
+    "react": "^19.3.0",
+    "ws": "^8.21.3",
     "zod": "^4.6.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^26.5.1",
+    "@types/react": "^19.3.0",
+    "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^5.0.0",
     "eslint": "^10.10.0",
+    "ink-testing-library": "^4.0.0",
     "prettier": "^3.9.6",
+    "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.70.0",
     "vitest": "^5.0.0"

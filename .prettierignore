@@ -5,3 +5,7 @@ coverage/
 docs/
 *.md
 pnpm-lock.yaml
+
+# Tailwind 的编译产物（`pnpm css:build` 生成）。它是压缩过的单行文件，
+# 让 Prettier 重排它只会让 `css:check` 的逐字节比对永远失败。
+src/clients/web/static/styles.css

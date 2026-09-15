@@ -1,5 +1,12 @@
 import { ErrorCode, toAgentError } from '../core/errors.js'
-import { withTimeout } from '../core/abort.js'
+import {
+  formatAnswersForModel,
+  type AskUserQuestion,
+  type UserInputRequest,
+  type UserInputResolution,
+  type UserInputService,
+} from '../core/input.js'
+import { abortable, withTimeout } from '../core/abort.js'
 import {
   type SessionId,
   type ToolCallId,
@@ -8,6 +15,7 @@ import {
   createToolExecutionId,
 } from '../core/ids.js'
 import {
+  DEFAULT_PERMISSION_TIMEOUT_MS,
   type ApprovalService,
   PermissionAction,
   PermissionMode,
@@ -32,6 +40,13 @@ export interface ToolExecutorOptions {
   readonly permissionEngine: PermissionEngine
   readonly chatStore?: ChatStore
   readonly approvalService?: ApprovalService
+  /**
+   * 提问服务。缺省时 `ask_user_question` 退回"无答案"路径
+   * （回灌 `{"_timeout": true}`），turn 不会因此卡住。
+   */
+  readonly userInputService?: UserInputService
+  /** 提问等待上限。超时回灌 `{"_timeout": true}` 并继续。 */
+  readonly userInputTimeoutMs?: number
   readonly clock?: Clock
   readonly timeoutMs?: number
   readonly outputLimitChars?: number
@@ -63,6 +78,8 @@ export class ToolExecutor {
   readonly clock: Clock
   readonly timeoutMs: number
   readonly outputLimitChars: number
+  readonly userInputService: UserInputService | undefined
+  readonly userInputTimeoutMs: number
   readonly onEvent?: ToolExecutorOptions['onEvent']
   constructor(options: ToolExecutorOptions) {
     this.registry = options.registry
@@ -71,6 +88,8 @@ export class ToolExecutor {
     this.approvalService = options.approvalService
     this.clock = options.clock ?? systemClock
     this.timeoutMs = options.timeoutMs ?? 120_000
+    this.userInputService = options.userInputService
+    this.userInputTimeoutMs = options.userInputTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
     this.outputLimitChars = options.outputLimitChars ?? 64_000
     this.onEvent = options.onEvent
   }
@@ -198,7 +217,7 @@ export class ToolExecutor {
         reason: decision.reason,
         status: PermissionRequestStatus.PENDING_USER_APPROVAL,
         created_at: this.clock.now(),
-        expires_at: this.clock.nowMs() + 120_000,
+        expires_at: this.clock.nowMs() + DEFAULT_PERMISSION_TIMEOUT_MS,
         resolved_at: null,
         resolved_by: '',
         resolution: '',
@@ -222,7 +241,14 @@ export class ToolExecutor {
           ok: false,
           content: decision.reason,
           error_code: ErrorCode.PERMISSION_REQUIRED,
-          meta: { request_id: request.request_id },
+          // 带上真实的风险等级与到期时刻：没有审批服务时，runtime 会用它们
+          // 广播 `permission_required` 事件。缺了它们，runtime 只能编造
+          // （旧实现就是硬编码 `risk_level: 'medium'` + `Date.now() + 120_000`）。
+          meta: {
+            request_id: request.request_id,
+            risk_level: decision.risk,
+            expires_at: request.expires_at,
+          },
         }
       let resolution: PermissionResolution =
         request.status === PermissionRequestStatus.APPROVED
@@ -266,13 +292,20 @@ export class ToolExecutor {
           meta: { request_id: request.request_id },
         }
       }
-      if (decision.risk === 'high' && !resumingSecond) {
+      // ADR 0002 §七 把风险档位从 3 档扩到 4 档并把 `critical` 变成真实输入，
+      // 但这里原本只判 `high`——于是 `critical` 反而比 `high` 少一道确认。
+      if ((decision.risk === 'high' || decision.risk === 'critical') && !resumingSecond) {
         if (!this.approvalService)
           return {
             ok: false,
             content: 'second confirmation required',
             error_code: ErrorCode.PERMISSION_REQUIRED,
-            meta: { request_id: request.request_id },
+            meta: {
+              request_id: request.request_id,
+              risk_level: decision.risk,
+              expires_at: request.expires_at,
+              second_confirmation: true,
+            },
           }
         const secondRequest = {
           ...request,
@@ -327,13 +360,49 @@ export class ToolExecutor {
     const timeout = withTimeout(options.signal, this.timeoutMs)
     let result: ToolResult
     try {
-      result = await tool.execute({ ...ctx, signal: timeout.signal }, input)
+      // ⚠️ 必须用 `abortable` 而不是直接 await。
+      //
+      // 直接 await 的话，工具若**不理会 signal**（内置工具大多如此：只有
+      // `bash` 会把 signal 传给子进程），`await` 会一直等到它真正跑完——
+      // 下面的 `timeout.timedOut()` 只能把**已经完成的**结果标成超时，
+      // 超时形同虚设。`abortable` 保证等待本身在超时时结束。
+      //
+      // ⚠️ 提前返回**不代表工具停了**。不响应 abort 的工具有可能仍在后台运行
+      // 并产生副作用，此时副作用是否发生不可知——按 ADR 0002 §六 的语义，
+      // 这种不确定性的正确表达是 `UNKNOWN`，但那条路径目前只覆盖"进程中断"
+      // （由 `recover()` 把 `RUNNING` 改判为 `UNKNOWN`）。这里是已知限制：
+      // 超时的工具仍记为 FAILURE，因为它已经向模型返回了失败结果。
+      result = await abortable(
+        tool.execute({ ...ctx, signal: timeout.signal }, input),
+        timeout.signal,
+      )
     } catch (error) {
       const e = toAgentError(error, `tool:${toolName}`)
       result = { ok: false, content: e.message, error_code: e.code, meta: {} }
     } finally {
       timeout.cleanup()
     }
+    // `ask_user_question` 走**与权限审批同构**的等待路径：由 executor 等待并
+    // 产出最终 ToolResult，runtime 不需要任何特殊分支。
+    //
+    // 这样做而不是让 runtime 等待，有两个具体好处：
+    // 1. 权限等待本来就在 executor 里（`AWAITING_PERMISSION` 阶段在正常路径下
+    //    也不进入——runtime 并不知情），两条阻塞通道走同一模式才一致；
+    // 2. 结果经由**正常的工具结果路径**落盘，不依赖 runtime 为它开特殊分支。
+    //
+    // ⚠️ 修正一处此前的误判：原实现**确实**写了 `tool_result`
+    // （`agent-runtime.ts` 里 `addMessage(TOOL_RESULT)` 在 `finish()` 之前），
+    // 所以并不存在悬空的 `tool_use`。原实现真正的问题是
+    // `user_input_required` 事件永不发出、`TurnPhase.AWAITING_USER_INPUT`
+    // 永不进入，于是 `requiresResolution()` 声称需要回灌却没有任何事件去喂它。
+    //
+    // 即使没有注入 `userInputService` 也照常消化：回灌 `{"_timeout": true}`
+    // （与真超时同形），让模型自己决定下一步。这比留下一个
+    // "error_code 表示需要用户输入、但谁也不会来回答"的结果要好——
+    // 后者会让模型反复重试同一个工具。
+    if (result.error_code === 'USER_INPUT_REQUIRED')
+      result = await this.awaitUserInput(toolName, options, result, timeout.signal)
+
     let finalRecord: Partial<PersistedToolExecution> = {
       status: result.ok ? ToolExecutionStatus.SUCCESS : ToolExecutionStatus.FAILURE,
       finishedAt: this.clock.now(),
@@ -365,6 +434,63 @@ export class ToolExecutor {
     await this.chatStore?.updateToolExecution(execution.executionId, finalRecord)
     await this.onEvent?.('tool.complete', { tool: toolName, ok: result.ok, meta: result.meta })
     return result
+  }
+
+  /**
+   * 等待用户回答 `ask_user_question`。
+   *
+   * 与 `ApprovalService` 的三条要求一致（幂等、永不挂起、不抛），但**超时语义
+   * 不同**：提问超时不是拒绝，而是回灌 `{"_timeout": true}` 让 turn 继续跑
+   * （`parts/09` §5 的"超时按 deny"只适用于权限）。
+   */
+  private async awaitUserInput(
+    toolName: string,
+    options: ExecuteToolOptions,
+    result: ToolResult,
+    signal: AbortSignal,
+  ): Promise<ToolResult> {
+    const questions = Array.isArray(result.meta['questions'])
+      ? (result.meta['questions'] as readonly AskUserQuestion[])
+      : []
+    const requestId = createPermissionRequestId()
+    const request: UserInputRequest = {
+      request_id: requestId,
+      session_id: options.sessionId,
+      turn_id: options.turnId,
+      tool_call_id: options.toolCallId,
+      tool_name: toolName,
+      questions,
+      created_at: this.clock.now(),
+      expires_at: this.clock.nowMs() + this.userInputTimeoutMs,
+    }
+    // 先落盘再等待 —— 进程中断后要能恢复出"这个 turn 停在等某个问题的答案"
+    await this.chatStore?.addUserInputRequest(request)
+
+    const timeout = withTimeout(signal, Math.max(0, request.expires_at - this.clock.nowMs()))
+    let resolution: UserInputResolution = {
+      requestId,
+      answers: null,
+      resolvedBy: 'system',
+      reason: 'user input unavailable',
+    }
+    try {
+      // 没有注入服务时**不等待**：等价于立即超时。否则一个没有 UI 的自动化
+      // 运行会在这里静默挂满整个超时窗口。
+      if (this.userInputService !== undefined)
+        resolution = await this.userInputService.request(request, timeout.signal)
+    } catch {
+      /* 超时/取消/UI 异常一律保持"无答案"，由 formatAnswersForModel 兜底 */
+    } finally {
+      timeout.cleanup()
+    }
+    await this.chatStore?.resolveUserInput(requestId, resolution)
+
+    return {
+      ok: true,
+      content: formatAnswersForModel(questions, resolution.answers),
+      error_code: null,
+      meta: { request_id: requestId, questions, answered: resolution.answers !== null },
+    }
   }
 
   private registryName(input: unknown): string {

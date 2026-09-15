@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventLog } from '../../src/storage/event-log.js'
+import { NullEventSink } from '../../src/core/events.js'
 import { ChatStore } from '../../src/storage/chat-store.js'
 import { resolveAppPaths } from '../../src/storage/paths.js'
 import { DefaultPermissionEngine } from '../../src/tools/permission-engine.js'
@@ -249,6 +250,7 @@ describe('runtime core acceptance', () => {
       toolExecutor: executor,
       provider: model,
       model: 'test',
+      eventSink: new NullEventSink(),
       workspaceRoot: dir,
       principalId: 'p',
     })
@@ -305,6 +307,7 @@ describe('runtime core acceptance', () => {
       toolExecutor: executor,
       provider: model,
       model: 'test',
+      eventSink: new NullEventSink(),
       workspaceRoot: dir,
       principalId: 'p',
     })
@@ -503,6 +506,7 @@ describe('runtime core acceptance', () => {
       toolExecutor: executor,
       router,
       providerFactory,
+      eventSink: new NullEventSink(),
       workspaceRoot: dir,
       principalId: 'p',
     })
@@ -644,6 +648,7 @@ describe('runtime core acceptance', () => {
       toolExecutor: executor,
       provider: model,
       model: 'test',
+      eventSink: new NullEventSink(),
       workspaceRoot: dir,
       principalId: 'p',
     })

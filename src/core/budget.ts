@@ -71,6 +71,15 @@ export const DEFAULT_BUDGET: AgentBudget = {
  * - `maxAutoContinues`：turn 预算耗尽时追加预算的次数。递增后**增加** turn 预算。
  * - `maxIncompleteContinues`：工具调用被截断后重试的次数。**不增加** turn 预算。
  * - `maxContextRetries`：上下文超限后 reactive 压缩并重试的次数。
+ *
+ * ⚠️ **本实现只使用了其中的 `maxContextRetries`**（reactive 压缩）。
+ * `maxAutoContinues` / `autoContinueTurns` / `maxIncompleteContinues` 是
+ * **为兼容而保留的契约**，运行时从未读取：自动续跑语义由 `maxTurns` 承担，
+ * 而"工具调用被截断"（`incomplete_tool_call`）这条路径已在 ADR 0002 §三 中
+ * 因 Anthropic-only 而被移除。
+ *
+ * 保留类型而不是删除，是为了让"哪些旧语义没有移植"在代码里可见，
+ * 而不是让它们悄悄消失。
  */
 export interface ContinuationLimits {
   /** 自动续跑次数上限。旧项目为 3。 */

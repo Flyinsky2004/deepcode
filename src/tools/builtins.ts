@@ -661,14 +661,48 @@ async function walk(root: string): Promise<string[]> {
   }
   return out
 }
+/**
+ * 把 glob 模式翻译成正则并匹配。
+ *
+ * 语义与旧项目使用的 Python `Path.glob()` 对齐（`parts/04` §5.5）：
+ * - `*` 匹配除 `/` 外的任意长度片段（不跨目录）；
+ * - `?` 匹配单个非 `/` 字符；
+ * - `**` 递归，可匹配零层或多层。`**` 后跟 `/` 时整体作为**可选**前缀，
+ *   因此 `**\/*.py` 既能匹配根下的 `a.py`，也能匹配 `src/deep/a.py`；
+ * - 其余字符按字面量处理（正则元字符转义）。
+ *
+ * ⚠️ 必须**单次遍历**生成正则。先前的实现是对模式串连着做四次 `replaceAll`，
+ * 后一步会重写前一步刚插入的片段（`*` → `[^/]*` 会把 `**` 生成的 `.*` 改掉，
+ * `?` → `[^/]` 又会改掉 `(?:...)?` 里的 `?`），结果任何含 `**` 的模式都恒不匹配
+ * ——而 `glob` 工具自己的 description 举的例子正是 `**\/*.py`。
+ */
 function globMatch(path: string, pattern: string): boolean {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replaceAll('**/', '(?:.*/)?')
-    .replaceAll('**', '.*')
-    .replaceAll('*', '[^/]*')
-    .replaceAll('?', '[^/]')
-  return new RegExp(`^${escaped}$`).test(path)
+  let regex = ''
+  for (let index = 0; index < pattern.length; index++) {
+    const char = pattern[index]!
+    if (char === '*') {
+      if (pattern[index + 1] !== '*') {
+        regex += '[^/]*'
+        continue
+      }
+      if (pattern[index + 2] === '/') {
+        // `**/`：零层或多层目录前缀。
+        regex += '(?:.*/)?'
+        index += 2
+      } else {
+        // 行尾的裸 `**`：任意深度。
+        regex += '.*'
+        index += 1
+      }
+      continue
+    }
+    if (char === '?') {
+      regex += '[^/]'
+      continue
+    }
+    regex += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+  return new RegExp(`^${regex}$`).test(path)
 }
 function sensitive(path: string): boolean {
   const name = basename(path).toLowerCase()

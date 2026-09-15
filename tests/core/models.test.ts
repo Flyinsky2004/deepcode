@@ -29,8 +29,9 @@ describe('MessageRole', () => {
 })
 
 describe('MessageSubtype', () => {
-  it('8 个 subtype，含压缩两类', () => {
+  it('9 个 subtype：旧实现的 8 个 + Phase 6 的 command_event', () => {
     expect(Object.values(MessageSubtype).sort()).toEqual([
+      'command_event',
       'compact_boundary',
       'compact_summary',
       'interrupted',
@@ -42,12 +43,12 @@ describe('MessageSubtype', () => {
     ])
   })
 
-  it('写入集合覆盖全部 8 个（本实现写入正确的 compact subtype）', () => {
+  it('写入集合覆盖全部 subtype（本实现写入正确的 compact subtype）', () => {
     // 旧实现写入 compact 消息时漏传 subtype，导致磁盘上落成 "normal"，
     // 检测只能依赖 content.type。本实现写入正确的 subtype。
     expect(WRITABLE_MESSAGE_SUBTYPES.has(MessageSubtype.COMPACT_BOUNDARY)).toBe(true)
     expect(WRITABLE_MESSAGE_SUBTYPES.has(MessageSubtype.COMPACT_SUMMARY)).toBe(true)
-    expect(WRITABLE_MESSAGE_SUBTYPES.size).toBe(8)
+    expect(WRITABLE_MESSAGE_SUBTYPES.size).toBe(Object.values(MessageSubtype).length)
   })
 })
 
@@ -168,6 +169,7 @@ describe('默认值', () => {
       'current_turn',
       'last_input_tokens',
       'parent_conversation_id',
+      'principal_id',
       'status',
       'total_output_tokens',
     ])

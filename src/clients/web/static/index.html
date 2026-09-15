@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>deepcode</title>
+    <!--
+      样式是**编译产物**（`pnpm css:build` 生成 static/styles.css）。
+      CSP 为 `style-src 'self'`，没有 `unsafe-inline`——所以这里既不能有
+      内联 style 标签，`app.js` 里也不能写 `element.style.*`，动态外观一律走 class。
+    -->
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="h-screen bg-slate-950 text-slate-100 antialiased">
+    <!-- 登录：token 由终端打印，只显示一次。存在 sessionStorage 里，不落 URL。 -->
+    <section id="login" class="flex h-full items-center justify-center p-6">
+      <form
+        id="login-form"
+        class="w-full max-w-md space-y-4 rounded-xl border border-slate-800 bg-slate-900 p-6"
+      >
+        <h1 class="text-lg font-semibold">deepcode Web UI</h1>
+        <p class="text-sm text-slate-400">
+          在启动 Web UI 的终端里会打印一次访问 token。粘贴到这里即可登录； token 只保存在本标签页的
+          sessionStorage 中，不会出现在 URL 里。
+        </p>
+        <input
+          id="token-input"
+          type="password"
+          autocomplete="off"
+          placeholder="访问 token"
+          class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-sky-500"
+        />
+        <p id="login-error" class="hidden text-sm text-rose-400"></p>
+        <button
+          type="submit"
+          class="w-full rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium hover:bg-sky-500"
+        >
+          登录
+        </button>
+      </form>
+    </section>
+
+    <!-- 主界面 -->
+    <main id="app" class="hidden h-full grid-cols-[16rem_1fr] md:grid">
+      <aside class="flex min-h-0 flex-col border-r border-slate-800 bg-slate-900">
+        <div class="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+          <span class="text-sm font-semibold">会话</span>
+          <button
+            id="new-session"
+            class="rounded-md border border-slate-700 px-2 py-1 text-xs hover:bg-slate-800"
+          >
+            新建
+          </button>
+        </div>
+        <ul id="session-list" class="min-h-0 flex-1 overflow-y-auto p-2 text-sm"></ul>
+        <div class="border-t border-slate-800 px-3 py-2 text-xs text-slate-500">
+          <span id="connection-state">未连接</span>
+        </div>
+      </aside>
+
+      <section class="flex min-h-0 flex-col">
+        <header class="flex items-center justify-between gap-2 border-b border-slate-800 px-4 py-2">
+          <div class="min-w-0">
+            <h2 id="session-title" class="truncate text-sm font-semibold">未选择会话</h2>
+            <p id="session-meta" class="truncate text-xs text-slate-500"></p>
+          </div>
+          <button
+            id="cancel-turn"
+            class="hidden rounded-md border border-rose-700 px-2 py-1 text-xs text-rose-300 hover:bg-rose-950"
+          >
+            取消当前 turn
+          </button>
+        </header>
+
+        <div id="messages" class="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm"></div>
+
+        <div id="pending" class="hidden border-t border-amber-800 bg-amber-950/40 p-3"></div>
+
+        <form id="composer" class="flex items-end gap-2 border-t border-slate-800 p-3">
+          <textarea
+            id="prompt"
+            rows="2"
+            placeholder="输入消息；以 / 开头则是 slash command。Enter 发送，Shift+Enter 换行。"
+            class="min-h-[2.5rem] flex-1 resize-y rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-sky-500"
+          ></textarea>
+          <button
+            id="send"
+            type="submit"
+            class="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700"
+          >
+            发送
+          </button>
+        </form>
+      </section>
+    </main>
+
+    <!-- 权限审批对话框 -->
+    <div
+      id="approval-modal"
+      class="fixed inset-0 z-10 hidden items-center justify-center bg-slate-950/80 p-6"
+    >
+      <div class="w-full max-w-lg space-y-3 rounded-xl border border-slate-700 bg-slate-900 p-5">
+        <h3 class="text-base font-semibold text-amber-300">需要授权</h3>
+        <p class="text-sm text-slate-300">
+          工具 <code id="approval-tool" class="rounded bg-slate-800 px-1"></code> （风险：<span
+            id="approval-risk"
+          ></span
+          >）请求执行。
+        </p>
+        <p id="approval-reason" class="text-sm text-slate-400"></p>
+        <pre
+          id="approval-args"
+          class="max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300"
+        ></pre>
+        <p id="approval-error" class="hidden text-sm text-rose-400"></p>
+        <div class="flex flex-wrap justify-end gap-2">
+          <button
+            id="approval-deny"
+            class="rounded-lg border border-slate-600 px-3 py-2 text-sm hover:bg-slate-800"
+          >
+            拒绝
+          </button>
+          <button
+            id="approval-allow-once"
+            class="rounded-lg border border-sky-600 px-3 py-2 text-sm text-sky-200 hover:bg-sky-950"
+          >
+            仅本次允许
+          </button>
+          <button
+            id="approval-allow"
+            class="rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium hover:bg-sky-500"
+          >
+            允许
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!--
+      原生 ESM，无 bundler。CSP 的 `script-src 'self'` 下外链脚本是唯一可行的形式。
+    -->
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

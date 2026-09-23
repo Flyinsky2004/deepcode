@@ -42,6 +42,7 @@ export const ZH: Readonly<Record<TKey, string>> = {
   [TKey.STATUS_MSGS]: '{count} 条消息',
   [TKey.STATUS_TIER]: '档位: {tier}',
   [TKey.STATUS_COST]: '${cost}',
+  [TKey.STATUS_ROUTE_CHANGED]: '模型路由已切换：{from} → {to}（{reason}）',
   [TKey.STATUS_MODE_NORMAL]: '常规',
   [TKey.STATUS_MODE_AUTO_EDIT]: '自动',
   [TKey.STATUS_MODE_YOLO]: 'YOLO',

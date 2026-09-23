@@ -408,4 +408,20 @@ describe('skill_resolved / auto_continue', () => {
       before,
     )
   })
+
+  it('model_route_changed 在状态栏留下路由切换提示', () => {
+    const applied = applyEvent(
+      state(),
+      event(RuntimeEventType.MODEL_ROUTE_CHANGED, {
+        from_provider: 'anthropic',
+        from_model: 'claude-sonnet',
+        to_provider: 'deepseek',
+        to_model: 'deepseek-chat',
+        reason: 'rate_limit',
+      }),
+    )
+    expect(applied.state.notice).toContain('anthropic/claude-sonnet')
+    expect(applied.state.notice).toContain('deepseek/deepseek-chat')
+    expect(applied.state.notice).toContain('rate_limit')
+  })
 })

@@ -250,16 +250,15 @@ Phase 6 的主体（注册表、管线、`/workwith`、`/sessions`、`/clear`、
 
 以下为审查中发现、经评估后**刻意不在本次修**的项，逐条理由见 ADR 0004「已知限制」：
 
-- **`model_route_changed` 目前没有任何客户端消费** —— TUI 与 Web 对未知事件
-  都是"原样忽略"，所以本事件只进事件日志与 WS 流。**D8 的可观测性目标尚未兑现**：
-  把事件发出来是必要条件，不是充分条件。归 Phase 7。
-  ⚠️ 本节初版曾写"UI 侧仍可通过 `turn_start` 的模型快照实时得到同一信息"——
-  **那句话是错的**，`TurnStartEvent.data` 只有 `{ turn_number }`，没有模型快照。
-  UI 的真正兜底是落在 `chat.json` 里的 `TurnModelSnapshot`（事后可读）。
+- **`model_route_changed` 的未知事件兜底** —— TUI 与 Web 对未来新增事件仍是"原样忽略"；
+  当前已实现的 `model_route_changed` 则会在 TUI 状态栏和 Web 消息区显示路由切换提示，
+  同时继续保留在事件日志与 WS 流中。未知事件的通用可视化仍归后续演进。
 - **Web 路径下 `local-principal` 等价于"已认证"** —— `AuthService` 固定用
   `app.localPrincipalId`，所以那五个会写全局配置的命令可以从浏览器调用，
   包括 `--listen lan --auth none`。不是本次新引入的（`/language` 早已如此），
   但本次扩大了暴露面。归 Phase 7/11。
+- **`--auth password` 保留显式未实现失败** —— 当前 Web UI 完成 token/none 两条认证路径；
+  password 需要独立登录表单、凭据存储和限流策略，启动时会返回稳定错误码，不会静默当成 token。
 - **思考预算可能超出 provider 请求超时**（`xhigh` = 48k > 官方提示的 32k 线），
   触发时裸 `AbortError` 会变成 `INTERNAL_ERROR` 而非可识别的"超时"
   ——违反设计约束 6。归 Phase 11。
@@ -276,32 +275,34 @@ Phase 6 的主体（注册表、管线、`/workwith`、`/sessions`、`/clear`、
 
 ### TUI
 
-- [ ] 只消费 runtime event，不直接改 runtime state
-- [ ] 展示模型档位、provider/model、token、成本和权限请求
-- [ ] 支持 cancel、permission resolution、`/workwith`
+- [x] 只消费 runtime event，不直接改 runtime state
+- [x] 展示模型档位、provider/model、token、成本和权限请求
+- [x] 支持 cancel、permission resolution、`/workwith`
 
 ### Web UI
 
-- [ ] 实现 `--web-ui`
-- [ ] 实现 `--port`、`--listen local|lan|public`、`--host`
-- [ ] 默认 `127.0.0.1` / `::1`，默认 token
-- [ ] 实现 HTTP API 和 WebSocket event stream
-- [ ] 实现 bearer token、Origin/CORS/CSRF、rate limit
-- [ ] 实现 principal/session authorization
-- [ ] 实现 `lastEventId` 补发和 Idempotency-Key
-- [ ] 实现优雅关闭和 active turn cancel
+- [x] 实现 `--web-ui`
+- [x] 实现 `--port`、`--listen local|lan|public`、`--host`
+- [x] 默认 `127.0.0.1` / `::1`，默认 token
+- [x] 实现 HTTP API 和 WebSocket event stream
+- [x] 实现 bearer token、Origin/CORS/CSRF、rate limit
+- [x] 实现 principal/session authorization
+- [x] 实现 `lastEventId` 补发和 Idempotency-Key
+- [x] 实现优雅关闭和 active turn cancel
 
 ### 验收
 
-- local 不接受局域网连接
-- public 禁止无认证启动
-- Web UI 与 TUI 同时连接时事件、权限和 cancel 语义一致
-- WebSocket 断线重连不会丢失或重复 turn
+- [x] local 不接受局域网连接
+- [x] public 禁止无认证启动
+- [x] Web UI 与 TUI 同时连接时事件、权限和 cancel 语义一致
+- [x] WebSocket 断线重连不会丢失或重复 turn
 
 ## Phase 7 已完成
 
 **TUI**（`src/clients/tui/`，Ink）、**Web UI**（`src/clients/web/`，`node:http` + `ws` + Tailwind 编译的静态页）
 与**组合根**（`src/app/`）均已落地，三端共用同一个 `AgentApplication`。
+正式入口为 `src/cli.ts`（构建后为 `dist/cli.js`），支持 `--web-ui`、端口/监听范围、显式 host、认证和 CORS 参数；
+`pnpm dev` 与构建后的 `pnpm start` 使用同一套参数解析器。
 验收（`tests/acceptance/phase7.test.ts`）：两端收到**同一** `sequence` 序列、任一方批准双方都收到
 `permission_resolved`、任一方取消双方都收到 `turn_end{cancelled:true}`、补发锚点失效时返回
 `EVENT_RESYNC_REQUIRED` 而非静默补发全量。
@@ -422,20 +423,20 @@ Phase 6 的主体（注册表、管线、`/workwith`、`/sessions`、`/clear`、
       （`tests/acceptance/phase6.test.ts`、`tests/commands/model*.test.ts`、
       `tests/runtime/agent-runtime.test.ts` 的 `model_route_changed 事件` 段）
 - [ ] Anthropic-only 协议在流式文本、thinking、tool use、usage、错误和取消场景下通过测试
-- [ ] TUI、CLI、Web UI 使用同一 Agent runtime
-- [ ] README、配置示例和本文件中的参数名称一致
+- [x] TUI、CLI、Web UI 使用同一 Agent runtime
+- [x] README、配置示例和本文件中的参数名称一致
 
 ## 测试与覆盖率
 
-最近一次全量数据（Phase 6 收尾后，`pnpm check` 与 `pnpm test:coverage` 均 exit 0）：
+最近一次全量数据（Phase 7 收尾后，`pnpm check` 与 `pnpm test:coverage` 均 exit 0）：
 
 | 项 | 值 | 阈值 |
 |---|---|---|
-| 测试文件 / 用例 | 79 / 1702 | — |
-| 语句 | 95.28% | 80% |
-| 分支 | 91.24% | 80% |
-| 函数 | 96.46% | 80% |
-| 行 | 96.77% | 80% |
+| 测试文件 / 用例 | 80 / 1709 | — |
+| 语句 | 94.48% | 80% |
+| 分支 | 90.76% | 80% |
+| 函数 | 95.93% | 80% |
+| 行 | 95.95% | 80% |
 
 阶段验收：`tests/acceptance/phase0.test.ts`、`phase1-5.test.ts`、
 `phase6.test.ts`、`phase7.test.ts`。

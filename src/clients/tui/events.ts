@@ -229,6 +229,17 @@ export function applyEvent(state: TuiState, event: RuntimeEventEnvelope): EventR
     case RuntimeEventType.AUTO_CONTINUE:
       return result(state)
 
+    // ── model_route_changed：在状态栏显示 fallback 路由变更 ──
+    case RuntimeEventType.MODEL_ROUTE_CHANGED: {
+      const from = `${asString(data['from_provider'])}/${asString(data['from_model'])}`
+      const to = `${asString(data['to_provider'])}/${asString(data['to_model'])}`
+      const reason = asString(data['reason'], 'fallback')
+      return result({
+        ...state,
+        notice: translate(state.language, TKey.STATUS_ROUTE_CHANGED, { from, to, reason }),
+      })
+    }
+
     // ── permission_required ──
     case RuntimeEventType.PERMISSION_REQUIRED: {
       const next = enqueuePermission(state, event)

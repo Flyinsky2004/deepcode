@@ -24,6 +24,7 @@
           在启动 Web UI 的终端里会打印一次访问 token。粘贴到这里即可登录； token 只保存在本标签页的
           sessionStorage 中，不会出现在 URL 里。
         </p>
+        <label for="token-input" class="text-sm text-slate-300">访问 token</label>
         <input
           id="token-input"
           type="password"
@@ -55,7 +56,7 @@
         </div>
         <ul id="session-list" class="min-h-0 flex-1 overflow-y-auto p-2 text-sm"></ul>
         <div class="border-t border-slate-800 px-3 py-2 text-xs text-slate-500">
-          <span id="connection-state">未连接</span>
+          <span id="connection-state" aria-live="polite">未连接</span>
         </div>
       </aside>
 
@@ -73,9 +74,21 @@
           </button>
         </header>
 
-        <div id="messages" class="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm"></div>
+        <div
+          id="messages"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          class="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm"
+        ></div>
 
-        <div id="pending" class="hidden border-t border-amber-800 bg-amber-950/40 p-3"></div>
+        <div
+          id="pending"
+          role="region"
+          aria-live="polite"
+          aria-label="待处理问题"
+          class="hidden border-t border-amber-800 bg-amber-950/40 p-3"
+        ></div>
 
         <form id="composer" class="flex items-end gap-2 border-t border-slate-800 p-3">
           <textarea
@@ -98,10 +111,13 @@
     <!-- 权限审批对话框 -->
     <div
       id="approval-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="approval-title"
       class="fixed inset-0 z-10 hidden items-center justify-center bg-slate-950/80 p-6"
     >
       <div class="w-full max-w-lg space-y-3 rounded-xl border border-slate-700 bg-slate-900 p-5">
-        <h3 class="text-base font-semibold text-amber-300">需要授权</h3>
+        <h3 id="approval-title" class="text-base font-semibold text-amber-300">需要授权</h3>
         <p class="text-sm text-slate-300">
           工具 <code id="approval-tool" class="rounded bg-slate-800 px-1"></code> （风险：<span
             id="approval-risk"

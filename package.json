@@ -9,6 +9,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "deepcode": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -20,6 +23,7 @@
   ],
   "scripts": {
     "dev": "tsx scripts/dev-cli.ts",
+    "start": "node dist/cli.js",
     "build": "tsc -p tsconfig.build.json && node scripts/copy-static.mjs",
     "typecheck": "tsc --noEmit",
     "css:build": "tailwindcss -i src/clients/web/styles/input.css -o src/clients/web/static/styles.css --minify",

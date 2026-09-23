@@ -60,6 +60,16 @@ const SENSITIVE_KEY_PARTS: readonly string[] = [
   'cookie',
 ]
 
+/** 这些是 UI 所需的 token 计量字段，不是凭据。 */
+const SAFE_TOKEN_KEYS: ReadonlySet<string> = new Set([
+  'input_tokens',
+  'output_tokens',
+  'total_tokens',
+  'max_tokens',
+  'context_tokens_before',
+  'context_tokens_after',
+])
+
 /**
  * 值形态的密钥模式。
  *
@@ -79,6 +89,7 @@ const SECRET_VALUE_PATTERNS: readonly RegExp[] = [
 /** 键名是否敏感。 */
 export function isSensitiveKey(key: string): boolean {
   const lowered = key.toLowerCase()
+  if (SAFE_TOKEN_KEYS.has(lowered)) return false
   return SENSITIVE_KEY_PARTS.some((part) => lowered.includes(part))
 }
 

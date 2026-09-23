@@ -53,6 +53,7 @@ export const TKey = {
   STATUS_MSGS: 'status.msgs',
   STATUS_TIER: 'status.tier',
   STATUS_COST: 'status.cost',
+  STATUS_ROUTE_CHANGED: 'status.route_changed',
   STATUS_MODE_NORMAL: 'status.mode.normal',
   STATUS_MODE_AUTO_EDIT: 'status.mode.auto_edit',
   STATUS_MODE_YOLO: 'status.mode.yolo',

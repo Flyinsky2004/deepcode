@@ -133,6 +133,19 @@ describe('redactKeys / redactSecrets', () => {
     expect(result['text']).toBe('讨论 token 这个词')
   })
 
+  it('保留 token 统计字段，仍隐藏凭据字段', () => {
+    const result = redactKeys({
+      input_tokens: 10,
+      output_tokens: 3,
+      total_tokens: 13,
+      access_token: 'secret',
+    }) as Record<string, unknown>
+    expect(result['input_tokens']).toBe(10)
+    expect(result['output_tokens']).toBe(3)
+    expect(result['total_tokens']).toBe(13)
+    expect(result['access_token']).toBe(REDACTED)
+  })
+
   it('redactSecrets 额外按值形态脱敏', () => {
     const result = redactSecrets({ content: `key=${FAKE_SECRET}` }) as Record<string, unknown>
     expect(result['content']).toBe(`key=${REDACTED}`)
@@ -192,6 +205,23 @@ describe('事件 DTO', () => {
     // assistant 正文是用户要看的产出，按值猜测会毁掉正常内容；
     // 密钥防护由"工具入参才按值涂"这条规则承担。
     expect((dto.data as { content: string }).content).toBe(`这是 ${FAKE_SECRET} 的说明`)
+  })
+
+  it('usage 事件保留 token 计量字段，供 Web 状态栏显示', () => {
+    const dto = toEventDto(
+      envelope('turn_end', {
+        input_tokens: 120,
+        output_tokens: 45,
+        total_tokens: 165,
+        cost: 0.002,
+      }),
+    )
+    expect(dto.data).toEqual({
+      input_tokens: 120,
+      output_tokens: 45,
+      total_tokens: 165,
+      cost: 0.002,
+    })
   })
 
   it('载荷里的敏感键名仍然被涂', () => {

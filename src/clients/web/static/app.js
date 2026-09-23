@@ -25,6 +25,8 @@ const state = {
   sessionId: null,
   lastEventId: null,
   socket: null,
+  /** 连接代次；旧 socket 的 close/message 事件不得影响新会话。 */
+  connectionGeneration: 0,
   reconnectDelayMs: 500,
   /** sessionId → 是否有 turn 在跑。由事件驱动，不靠请求的返回值猜。 */
   running: new Set(),
@@ -88,6 +90,7 @@ async function api(path, { method = 'GET', body, idempotencyKey } = {}) {
 function logout(message) {
   sessionStorage.removeItem(TOKEN_KEY)
   state.token = ''
+  state.connectionGeneration += 1
   state.socket?.close()
   state.socket = null
   el('login').classList.remove('hidden')
@@ -165,6 +168,10 @@ async function createSession() {
 }
 
 async function selectSession(sessionId) {
+  // 先使旧连接失效，再异步加载新会话历史，避免切换期间旧事件污染新视图。
+  state.connectionGeneration += 1
+  state.socket?.close()
+  state.socket = null
   if (state.sessionId !== null && state.sessionId !== sessionId) {
     // 换会话必须重置锚点：lastEventId 只在**同一会话内**有意义，
     // 带到另一个会话会被服务端判为无效锚点并要求重建视图。
@@ -464,7 +471,9 @@ function setConnectionState(text) {
 
 async function connect() {
   if (state.sessionId === null) return
+  const generation = ++state.connectionGeneration
   state.socket?.close()
+  state.socket = null
 
   let ticket
   try {
@@ -475,9 +484,12 @@ async function connect() {
     })
     ticket = payload.ticket
   } catch (error) {
+    if (generation !== state.connectionGeneration) return
     setConnectionState(`获取 ticket 失败：${error.message}`)
     return
   }
+
+  if (generation !== state.connectionGeneration || state.sessionId === null) return
 
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
   const socket = new WebSocket(`${scheme}://${location.host}/api/stream?ticket=${ticket}`)
@@ -485,11 +497,13 @@ async function connect() {
   setConnectionState('连接中…')
 
   socket.addEventListener('open', () => {
+    if (generation !== state.connectionGeneration || state.socket !== socket) return
     setConnectionState('已连接')
     state.reconnectDelayMs = 500
   })
 
   socket.addEventListener('message', (event) => {
+    if (generation !== state.connectionGeneration || state.socket !== socket) return
     let frame
     try {
       frame = JSON.parse(event.data)
@@ -500,12 +514,14 @@ async function connect() {
   })
 
   socket.addEventListener('close', () => {
+    if (generation !== state.connectionGeneration || state.socket !== socket) return
     setConnectionState('已断开，重连中…')
     state.socket = null
     // 指数退避，但保留 `lastEventId`——重连要靠它补齐断线期间的事件。
     const delay = state.reconnectDelayMs
     state.reconnectDelayMs = Math.min(delay * 2, 10_000)
     setTimeout(() => {
+      if (generation !== state.connectionGeneration || state.sessionId === null) return
       void connect()
     }, delay)
   })
@@ -595,6 +611,13 @@ function handleEvent(event) {
     case 'cancel_requested':
       appendNote('已请求取消…')
       return
+    case 'model_route_changed': {
+      const from = `${data.from_provider ?? ''}/${data.from_model ?? ''}`
+      const to = `${data.to_provider ?? ''}/${data.to_model ?? ''}`
+      const reason = data.reason ? `（${data.reason}）` : ''
+      appendNote(`模型路由已切换：${from} → ${to}${reason}`)
+      return
+    }
     case 'turn_end':
       finishTurn(data, event.sessionId)
       return

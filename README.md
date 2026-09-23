@@ -35,6 +35,31 @@ pnpm build            # 产出 dist/
 pnpm check            # typecheck + lint + format:check + test
 ```
 
+启动 TUI：
+
+```bash
+pnpm dev
+```
+
+启动 Web UI（默认仅监听本机，并在终端输出一次性 bearer token）：
+
+```bash
+pnpm dev --web-ui
+pnpm dev --web-ui --port 8080 --host 127.0.0.1
+```
+
+生产构建后也可使用同一套参数：
+
+```bash
+pnpm build
+pnpm start -- --web-ui --listen local
+```
+
+可用参数包括 `--port`、`--listen local|lan|public`、`--host`、`--auth none|token|password`、
+`--token` 和 `--cors <origin[,origin...]>`。`password` 会在启动时明确提示尚未实现；
+`public` 监听必须启用认证；写操作还要求
+`Origin` 校验和 `Idempotency-Key`。
+
 运行单个测试文件：
 
 ```bash

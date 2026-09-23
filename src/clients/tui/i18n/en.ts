@@ -43,6 +43,7 @@ export const EN: Readonly<Record<TKey, string>> = {
   [TKey.STATUS_MSGS]: '{count} msgs',
   [TKey.STATUS_TIER]: 'Tier: {tier}',
   [TKey.STATUS_COST]: '${cost}',
+  [TKey.STATUS_ROUTE_CHANGED]: 'Model route changed: {from} → {to} ({reason})',
   [TKey.STATUS_MODE_NORMAL]: 'NORMAL',
   [TKey.STATUS_MODE_AUTO_EDIT]: 'AUTO EDIT',
   [TKey.STATUS_MODE_YOLO]: 'YOLO',

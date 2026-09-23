@@ -6,6 +6,7 @@ import {
   type PermissionQuery,
 } from '../core/tool.js'
 import { isAbsolute, relative, resolve } from 'node:path'
+import { evaluateSkillGuards } from '../skills/guards.js'
 
 const READ_ONLY = new Set([
   'file_read',
@@ -108,11 +109,16 @@ export class DefaultPermissionEngine implements PermissionEngine {
       else return deny(`tool denied: ${query.toolName}`, 'mode.tool-whitelist')
     }
 
-    const guard = query.skillGuards.find(
-      (g) => g.parameters['toolName'] === undefined || g.parameters['toolName'] === query.toolName,
+    const guardOutcome = evaluateSkillGuards(
+      query.skillGuards,
+      query.toolName,
+      query.input,
+      query.ctx,
     )
-    if (guard?.action === PermissionAction.DENY) return deny(guard.reason, guard.guardId)
-    if (guard?.action === PermissionAction.ASK) ask ??= request(guard.reason, guard.guardId)
+    if (!guardOutcome.allowed && guardOutcome.guard?.action === PermissionAction.DENY)
+      return deny(guardOutcome.reason, guardOutcome.guard.guardId)
+    if (!guardOutcome.allowed && guardOutcome.guard?.action === PermissionAction.ASK)
+      ask ??= request(guardOutcome.reason, guardOutcome.guard.guardId)
     if (risk === 'critical') return deny('critical-risk tool denied', 'risk.critical-deny')
     if (risk === 'high' && !ask)
       ask = request('high-risk action requires approval', 'risk.high-approval')

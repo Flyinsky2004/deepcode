@@ -34,6 +34,7 @@ import { type PersistedToolExecution } from '../storage/types.js'
 import { systemClock, type Clock } from '../core/time.js'
 import type { ToolRegistry } from './registry.js'
 import { inputHash as canonicalInputHash, argsPreview } from '../storage/audit.js'
+import { guardsFromTurnState } from '../skills/guards.js'
 
 export interface ToolExecutorOptions {
   readonly registry: ToolRegistry
@@ -120,7 +121,8 @@ export class ToolExecutor {
       }
     const input = validated.value
     const inputHash = canonicalInputHash(input)
-    const existing = (await this.chatStore?.listToolExecutions(options.sessionId))?.find(
+    const priorExecutions = await this.chatStore?.listToolExecutions(options.sessionId)
+    const existing = priorExecutions?.find(
       (r) =>
         r.turnId === options.turnId &&
         r.toolCallId === options.toolCallId &&
@@ -141,6 +143,19 @@ export class ToolExecutor {
         error_code: ErrorCode.TOOL_EXECUTION_UNKNOWN,
         meta: {},
       }
+    // 从本 turn 已成功落盘的读取记录重建 read-before-write 状态。这样同一轮
+    // 的后续工具调用及进程重启后的续跑都能满足该 guard，失败的读取不算。
+    const recentlyReadFiles = Object.fromEntries(
+      (priorExecutions ?? [])
+        .filter(
+          (record) =>
+            record.turnId === options.turnId &&
+            record.toolName === 'file_read' &&
+            record.status === ToolExecutionStatus.SUCCESS &&
+            typeof record.result?.data?.['path'] === 'string',
+        )
+        .map((record) => [record.result!.data!['path'] as string, true]),
+    )
     const ctx: ToolContext = {
       sessionId: options.sessionId,
       turnId: options.turnId,
@@ -148,10 +163,20 @@ export class ToolExecutor {
       workspaceRoot: options.workspaceRoot,
       allowedReadRoots: options.allowedReadRoots ?? [],
       allowedWriteRoots: options.allowedWriteRoots ?? [],
-      turnState: options.turnState ?? {},
+      turnState: {
+        ...options.turnState,
+        recently_read_files: {
+          ...(typeof options.turnState?.['recently_read_files'] === 'object' &&
+          options.turnState['recently_read_files'] !== null
+            ? options.turnState['recently_read_files']
+            : {}),
+          ...recentlyReadFiles,
+        },
+      },
       budget: options.budget,
       signal: options.signal,
     }
+    const skillGuards = options.skillGuards ?? guardsFromTurnState(ctx.turnState)
     const execution: PersistedToolExecution = existing ?? {
       executionId: createToolExecutionId(),
       sessionId: options.sessionId,
@@ -178,16 +203,39 @@ export class ToolExecutor {
       ctx,
       ...(claim === undefined ? {} : { toolClaim: claim }),
       mode: options.mode ?? PermissionMode.NORMAL,
-      skillGuards: options.skillGuards ?? [],
+      skillGuards,
     })
+    const matchedSkillGuard = skillGuards.find((guard) => guard.guardId === decision.policyId)
+    const skillGuardMeta =
+      matchedSkillGuard === undefined
+        ? {}
+        : {
+            skill_guard_id: matchedSkillGuard.guardId,
+            skill_name: matchedSkillGuard.skillName,
+            guard_type: matchedSkillGuard.guardType,
+            guard_reason: matchedSkillGuard.reason,
+            tool_name: toolName,
+            tool_input: input,
+          }
     if (decision.action !== PermissionAction.ALLOW) {
-      if (decision.action === PermissionAction.DENY)
-        return {
+      if (decision.action === PermissionAction.DENY) {
+        const denied: ToolResult = {
           ok: false,
           content: decision.reason || `tool denied: ${toolName}`,
-          error_code: ErrorCode.PERMISSION_DENIED,
-          meta: { policy_id: decision.policyId },
+          error_code:
+            matchedSkillGuard === undefined
+              ? ErrorCode.PERMISSION_DENIED
+              : ErrorCode.SKILL_GUARD_DENIED,
+          meta: { policy_id: decision.policyId, ...skillGuardMeta },
         }
+        await this.chatStore?.updateToolExecution(execution.executionId, {
+          status: ToolExecutionStatus.FAILURE,
+          finishedAt: this.clock.now(),
+          errorCode: denied.error_code,
+          result: denied,
+        })
+        return denied
+      }
       const priorRequests = existing?.permissionRequestIds?.length
         ? await this.chatStore?.listPermissionRequests(options.sessionId)
         : undefined
@@ -248,6 +296,7 @@ export class ToolExecutor {
             request_id: request.request_id,
             risk_level: decision.risk,
             expires_at: request.expires_at,
+            ...skillGuardMeta,
           },
         }
       let resolution: PermissionResolution =

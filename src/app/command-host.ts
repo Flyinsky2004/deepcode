@@ -193,6 +193,10 @@ export class CommandHostAdapter implements CommandHost {
     await this.#app.setModelContextWindow(tier, contextWindow)
   }
 
+  listSkills() {
+    return Promise.resolve(this.#app.listSkills())
+  }
+
   // ── 事件与审计 ──────────────────────────────────────────────────
 
   async publish(input: {

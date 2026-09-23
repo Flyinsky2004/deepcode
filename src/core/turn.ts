@@ -358,8 +358,8 @@ export interface ToolResultEvent extends TurnEventBase {
 /**
  * skill 解析完成。
  *
- * ⚠️ **本实现暂不发射**：Skill 子系统属 Phase 8（`src/skills` 尚不存在）。
- * 契约类型保留，因为它是 UI 绘制 skill 面板的既定接口。
+ * 仅在 turn 起点实际选中了至少一个 skill 时发射；无命中仍会落盘审计消息，
+ * 但不会制造一条空的 UI 事件。
  */
 export interface SkillResolvedEvent extends TurnEventBase {
   readonly type: typeof RuntimeEventType.SKILL_RESOLVED

@@ -105,7 +105,7 @@ export const CommandResultCode = {
   /** 会话正在跑 turn 且该命令不打断。 */
   SESSION_BUSY: 'session_busy',
   PERMISSION_DENIED: 'permission_denied',
-  /** 命令存在，但依赖的子系统尚未实现（Phase 8/10/11）。 */
+  /** 命令存在，但依赖的子系统或客户端端口不可用。 */
   NOT_AVAILABLE: 'not_available',
   FAILED: 'failed',
 } as const
@@ -210,6 +210,20 @@ export interface CommandHost {
   assignTierModel(tier: ModelTier, providerId: string, modelId: string): Promise<void>
   /** 改某个档位所用模型的上下文窗口（`/1M`）。能力校验由命令层做。 */
   setModelContextWindow(tier: ModelTier, contextWindow: number): Promise<void>
+
+  /** 刷新并读取 skill catalog；未提供时命令保持 Phase-6 的诚实降级。 */
+  listSkills?(): Promise<{
+    readonly loadedSkills: readonly {
+      readonly ref: string
+      readonly source: string
+      readonly description: string
+      readonly category: string
+      readonly tags: readonly string[]
+      readonly path: string
+    }[]
+    readonly invalidSkills: readonly { readonly path: string; readonly reason: string }[]
+    readonly checksum: string
+  }>
 
   // ── 事件与审计 ────────────────────────────────────────────────
   publish(input: {

@@ -472,18 +472,24 @@ describe('内置命令：默认装配的端到端', () => {
     expect(cleared.text).toContain('新会话')
   })
 
-  it('诚实降级命令回 NOT_AVAILABLE 并说明原因，不返回假数据', async () => {
+  it('空 skill 注册表返回可用的空态面板', async () => {
     const h = await harness()
     const sessionId = await h.newSession()
 
     const response = await postJson(h, '/api/commands', { command: '/skills', sessionId })
-    expect(response.status).toBe(501)
+    expect(response.status).toBe(200)
 
-    const body = await readJson<{ error: { code: string }; text: string; data: unknown }>(response)
-    expect(body.error.code).toBe(ErrorCode.COMMAND_NOT_AVAILABLE)
-    expect(body.text).toContain('尚未实现')
-    // 不谎报成功、也不用空列表假装可用
-    expect(body.text).toContain('不产生任何效果')
+    const body = await readJson<{
+      ok: boolean
+      code: string
+      text: string
+      data: { loadedSkills: unknown[]; invalidSkills: unknown[] }
+    }>(response)
+    expect(body.ok).toBe(true)
+    expect(body.code).toBe('panel')
+    expect(body.text).toContain('未加载任何 skill')
+    expect(body.data.loadedSkills).toEqual([])
+    expect(body.data.invalidSkills).toEqual([])
   })
 
   it('没有会话时 /workwith 明确拒绝', async () => {

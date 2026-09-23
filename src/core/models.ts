@@ -325,7 +325,7 @@ export interface SkillEventContent {
   readonly applied_skills: readonly string[]
   readonly confidence?: number
   readonly active_phase?: string
-  readonly guards_applied?: readonly string[]
+  readonly guards_applied?: readonly Readonly<Record<string, unknown>>[]
 }
 
 // ── 路径 ──────────────────────────────────────────────────────────

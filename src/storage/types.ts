@@ -1,6 +1,7 @@
 import type { AgentBudget, BudgetConsumption } from '../core/budget.js'
 import type { RuntimeEventEnvelope } from '../core/events.js'
 import type { SkillGuardRef, PermissionMode } from '../core/tool.js'
+import type { SkillTurnSnapshot } from '../skills/models.js'
 import type { WorkingMemory } from '../core/context.js'
 import type { Conversation, Message } from '../core/models.js'
 import type { ModelProfile, ModelRef, ModelTier, Provider } from '../core/provider.js'
@@ -71,6 +72,8 @@ export interface PersistedTurn {
   readonly mode?: PermissionMode
   readonly skillGuidance?: string
   readonly skillGuards?: readonly SkillGuardRef[]
+  /** turn 起点固定的 skill catalog/decision/runtime 快照。 */
+  readonly skillSnapshot?: SkillTurnSnapshot
   readonly finalText?: string
   readonly toolRounds?: number
   readonly lastToolError?: string | null

@@ -119,6 +119,8 @@ export interface RuntimeState {
   readonly appliedSkills: readonly string[]
   /** skill 当前阶段。 */
   readonly activePhase: string
+  /** 本 turn 固定的 skill planning injection。 */
+  readonly skillGuidance?: string
   readonly budget: AgentBudget
   /** 到目前为止的预算消耗，用于 UI 呈现与临近告警。 */
   readonly budgetConsumption: BudgetConsumption

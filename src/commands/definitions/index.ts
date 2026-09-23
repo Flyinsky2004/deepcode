@@ -3,8 +3,8 @@
  *
  * ## 关于"未实现子系统"的处理原则
  *
- * 有几条命令指向尚未实现的子系统（Skill 属 Phase 8、MCP 属 Phase 10、
- * 可观测性属 Phase 11）。它们**一律返回 `not_available` 并说明原因**，
+ * 有几条命令指向尚未实现的子系统（MCP 属 Phase 10、可观测性属
+ * Phase 11）。它们**一律返回 `not_available` 并说明原因**，
  * 而不是：
  *
  * - 返回假数据（用户会以为功能可用）；
@@ -59,6 +59,49 @@ function unavailableCommand(input: {
           `${input.name} 依赖的「${input.subsystem}」子系统尚未实现（${input.phase}）。` +
           (extra === '' ? '该命令当前不产生任何效果。' : `\n\n${extra}`),
         data: { subsystem: input.subsystem, phase: input.phase },
+      }
+    },
+  }
+}
+
+/** `/skills`：读取当前 registry 的实际快照；无注册表时明确降级。 */
+function skillsCommand(): CommandDefinition {
+  return {
+    name: 'skills',
+    description: '查看 skills',
+    parameters: { positionals: [] },
+    interrupt: 'never',
+    permission: { kind: 'always' },
+    auditEvent: 'command_received',
+    idempotency: { kind: 'read-only' },
+    persistResult: false,
+    execute: async (ctx): Promise<CommandResult> => {
+      const catalog = await ctx.host.listSkills?.()
+      if (catalog === undefined)
+        return {
+          ok: false,
+          code: CommandResultCode.NOT_AVAILABLE,
+          errorCode: ErrorCode.COMMAND_NOT_AVAILABLE,
+          text: '当前客户端未提供 Skill 注册表，无法列出 skills。',
+          data: { subsystem: 'Skill', reason: 'registry_unavailable' },
+        }
+      const loaded = catalog.loadedSkills
+        .map(
+          (skill) =>
+            `- **${skill.ref}** \`${skill.source}\`\n  ${skill.description}\n  category: \`${skill.category}\` · tags: \`${skill.tags.length ? skill.tags.join(', ') : '-'}\`\n  path: \`${skill.path}\``,
+        )
+        .join('\n')
+      const invalid = catalog.invalidSkills.length
+        ? `\n\nInvalid: ${catalog.invalidSkills.length}\n${catalog.invalidSkills.map((item) => `- \`${item.path}\`\n  ${item.reason}`).join('\n')}`
+        : ''
+      return {
+        ok: true,
+        code: CommandResultCode.PANEL,
+        text:
+          catalog.loadedSkills.length === 0 && catalog.invalidSkills.length === 0
+            ? '未加载任何 skill。请在工作区 skills/**/SKILL.md 或用户目录 ~/.deepcode/skills 下添加 SKILL.md。'
+            : `Loaded: ${catalog.loadedSkills.length}\n${loaded}${invalid}`,
+        data: catalog,
       }
     },
   }
@@ -212,12 +255,7 @@ export function createBuiltinCommandRegistry(): CommandRegistry {
     // 诚实降级：这些命令指向尚未实现的子系统。
     // 它们**存在**（用户在补全列表里能看到、能理解为什么不可用），
     // 但绝不假装成功。
-    unavailableCommand({
-      name: 'skills',
-      description: '查看 skills',
-      subsystem: 'Skill',
-      phase: 'Phase 8',
-    }),
+    skillsCommand(),
     unavailableCommand({
       name: 'mcp',
       description: '查看 MCP 服务',

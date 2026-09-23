@@ -32,7 +32,11 @@ export class ContextBuilder {
         .filter((m): m is NonNullable<ReturnType<typeof messageToApiFormat>> => m !== null),
     )
     const summary = latestSummary(active)
-    const system = createSystemPrompt(mode, this.skillGuidance?.(), summary?.summary)
+    const system = createSystemPrompt(
+      mode,
+      runtime.skillGuidance ?? this.skillGuidance?.(),
+      summary?.summary,
+    )
     return {
       system,
       conversation: api,

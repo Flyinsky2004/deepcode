@@ -17,7 +17,7 @@
 - [x] 实现模型、工具、权限和持久化（Phase 1–5）
 - [x] 实现 Slash Commands 与 `/workwith`（见下方 Phase 6 段）
 - [x] 实现 TUI / Web UI（见下方「Phase 7 已完成」段）
-- [ ] 实现 Skill、Sub-agent、MCP
+- [ ] 实现 Sub-agent、MCP
 - [ ] 完成跨模型和恢复测试
 
 ## 设计约束
@@ -191,8 +191,8 @@
 
 - [x] 实现独立 CommandRegistry
 - [x] 实现 `/model`、`/compact`、`/sessions`、`/mcp`、`/skills`、`/init`
-      （`/mcp` `/skills` 指向 Phase 8/10 的子系统，**诚实地降级**：
-      返回 `COMMAND_NOT_AVAILABLE` + 具体原因，不返回假数据、不用空列表假装成功）
+      （`/skills` 于 Phase 8 接入真实注册表；`/mcp` 仍指向 Phase 10，返回
+      `COMMAND_NOT_AVAILABLE` + 具体原因）
 - [x] 实现 `/workwith provider/model instruction`
 - [x] `/workwith` 只作用于下一项任务，不修改全局档位
 - [x] 实现模型存在性、能力、secret 和 enabled 校验
@@ -326,12 +326,12 @@ Phase 6 的主体（注册表、管线、`/workwith`、`/sessions`、`/clear`、
 > （`/model use`、`/thinking` 等的 runtime 消费、`/init` 转录）**已全部落地**。
 
 契约层（`CommandDefinition` / `CommandHost` 端口 / 执行管线）、`/workwith` 与 model-ref 消歧
-已落地。内置 **15 条命令**：**11 条真实现**（`/workwith` `/init` `/sessions` `/clear`
+已落地。内置 **15 条命令**：**12 条真实现**（`/workwith` `/init` `/sessions` `/clear`
 `/compact` `/language` `/model` 含写分支 `/thinking` `/reasoning` `/effort` `/1M`）、
-**4 条诚实降级**（`/skills` `/mcp` `/langfuse` `/api`，返回 `COMMAND_NOT_AVAILABLE` +
+`/skills` 于 Phase 8 接入真实注册表；**3 条诚实降级**（`/mcp` `/langfuse` `/api`，返回 `COMMAND_NOT_AVAILABLE` +
 具体原因，不返回假数据、不用空列表假装成功）。
 
-前三条降级指向确实尚未实现的子系统（Phase 8/10/11）；`/api` 是**刻意推迟**，
+前两条降级指向确实尚未实现的子系统（Phase 10/11）；`/api` 是**刻意推迟**，
 理由见 ADR 0004 D10。
 
 ### 已知限制
@@ -368,13 +368,17 @@ Phase 6 的主体（注册表、管线、`/workwith`、`/sessions`、`/clear`、
 
 ## Phase 8：Skills
 
-- [ ] 实现 `SKILL.md` schema、version、content hash
-- [ ] 实现 project > user > builtin 冲突处理
-- [ ] 实现 deterministic resolver 和 rejected reason
-- [ ] 实现 planning injection、runtime guard、phase state
-- [ ] turn 开始时固定 skill snapshot
-- [ ] guard 在 provider call 和 tool execution 前都生效
-- [ ] compact/resume 后恢复 skill runtime state
+- [x] 实现 `SKILL.md` schema、version、content hash
+- [x] 实现 project > user > builtin 冲突处理
+- [x] 实现 deterministic resolver 和 rejected reason
+- [x] 实现 planning injection、runtime guard、phase state
+- [x] turn 开始时固定 skill snapshot
+- [x] guard 在 provider call 和 tool execution 前都生效
+- [x] compact/resume 后恢复 skill runtime state
+
+无条件 `deny_tool` 在模型请求前从工具列表中剔除；带路径或命令参数的守护在
+`PermissionEngine` 执行前判定。turn 快照随 turn 落盘，成功的 `file_read` 执行记录
+可在进程恢复后重建 `require_read_before_write` 的读取状态。
 
 ## Phase 9：Sub-agent
 

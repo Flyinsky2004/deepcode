@@ -2,7 +2,7 @@
 
 跨客户端、跨模型的本地 Agent runtime。TypeScript 实现。
 
-> **当前状态：Phase 0–7 已实现；Skill、Sub-agent、MCP（Phase 8–10）仍按进度表排期。**
+> **当前状态：Phase 0–8 已实现；Sub-agent、MCP（Phase 9–10）仍按进度表排期。**
 > 已具备本地存储/恢复、Anthropic 流式 provider、turn 主循环、统一权限工具链、结构化上下文压缩、
 > slash command 层与三端（TUI / Web UI / CLI）共用的 `AgentApplication`。
 > 真实 Anthropic endpoint 的连通验收仍需用户凭据（Phase 2 的验收项）。
@@ -68,6 +68,32 @@ pnpm vitest run -t "test name"
 ```
 
 提交前请确保 `pnpm check` 通过。
+
+## Skills
+
+在工作区 `skills/<名称>/SKILL.md` 或用户目录 `~/.deepcode/skills/<名称>/SKILL.md`
+放置技能文件；子目录可继续嵌套，文件名必须是 `SKILL.md`。同名时工作区版本优先。
+启动后可用 `/skills` 查看已加载和无效的文件，文件修改会在下一个 turn 生效。
+
+```markdown
+---
+name: safe-edit
+description: Use when editing files safely
+version: 1.0.0
+triggers: [edit]
+constraints:
+  - type: require_read_before_write
+    reason: Read the file first
+---
+## Workflow
+Read the target file before editing.
+
+## Verification Checklist
+Check the resulting content.
+```
+
+匹配使用旧实现的确定性关键词规则，当前只识别小写 ASCII；纯中文请求不会命中 skill。
+建议在请求中加入对应的英文触发词（示例为 `edit`）。
 
 ## 权威文档
 

@@ -45,6 +45,29 @@ import type { ContextCompactor } from './compaction.js'
 import type { ToolExecutor } from '../tools/executor.js'
 import { AnthropicMessagesProvider } from '../providers/anthropic.js'
 import { withTimeout } from '../core/abort.js'
+import {
+  SkillCompiler,
+  SkillResolver,
+  type SkillTurnSnapshot,
+  type SkillRegistry,
+  shouldAdvertiseTool,
+} from '../skills/index.js'
+
+const SKILL_GUARD_AUDIT_KEYS = [
+  'skill_guard_id',
+  'skill_name',
+  'guard_type',
+  'guard_reason',
+] as const
+
+function skillGuardAuditMeta(result: ToolResult): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(
+    SKILL_GUARD_AUDIT_KEYS.filter((key) => result.meta[key] !== undefined).map((key) => [
+      key,
+      result.meta[key],
+    ]),
+  )
+}
 
 export interface AgentRuntimeOptions {
   readonly chatStore: ChatStore
@@ -71,11 +94,15 @@ export interface AgentRuntimeOptions {
   readonly principalId: string
   readonly clock?: Clock
   readonly maxTurns?: number
+  /** 可选 skill 注册表；未注入时新 turn 不解析 skill，恢复时保留已落盘的守护。 */
+  readonly skillRegistry?: SkillRegistry
 }
 
 export class AgentRuntime {
   readonly options: AgentRuntimeOptions
   readonly clock: Clock
+  readonly skillResolver = new SkillResolver()
+  readonly skillCompiler = new SkillCompiler()
   /**
    * 正在运行的 turn 所在的会话。`parts/09` §1.1：同一 session 默认只允许
    * 一个 active turn，第二个请求返回 `SESSION_BUSY`。
@@ -84,6 +111,109 @@ export class AgentRuntime {
   constructor(options: AgentRuntimeOptions) {
     this.options = options
     this.clock = options.clock ?? systemClock
+  }
+
+  /**
+   * 在 turn 第一次进入 context 阶段时解析并固定 skill。
+   *
+   * 解析结果作为 turn 的一部分落盘：文件在 turn 中途变化不会改变当前请求，
+   * 进程重启/compact resume 也只读取这份快照。没有 registry 的新 turn 写入
+   * 空快照；旧 turn 则兼容此前单独落盘的 skillGuidance/skillGuards。
+   */
+  private async initializeSkillSnapshot(
+    sessionId: SessionId,
+    turnId: TurnId,
+    persisted: PersistedTurn | undefined,
+    workingMemory: typeof EMPTY_WORKING_MEMORY,
+  ): Promise<{
+    readonly snapshot: SkillTurnSnapshot
+    readonly workingMemory: typeof EMPTY_WORKING_MEMORY
+  }> {
+    if (persisted?.skillSnapshot !== undefined) {
+      const snapshot = {
+        ...persisted.skillSnapshot,
+        runtimeGuards: Object.freeze([...persisted.skillSnapshot.runtimeGuards]),
+      }
+      return { snapshot, workingMemory }
+    }
+
+    if (this.options.skillRegistry === undefined) {
+      const snapshot: SkillTurnSnapshot = {
+        catalogChecksum: '',
+        appliedSkills: persisted?.workingMemory.appliedSkills ?? [],
+        activePhase: 'discover',
+        planningInjection: persisted?.skillGuidance ?? '',
+        runtimeGuards: Object.freeze([...(persisted?.skillGuards ?? [])]),
+        decisionReason: '',
+      }
+      await this.options.chatStore.updateTurn(sessionId, turnId, {
+        skillSnapshot: snapshot,
+        skillGuidance: snapshot.planningInjection,
+        skillGuards: snapshot.runtimeGuards,
+      })
+      return { snapshot, workingMemory }
+    }
+
+    const messages = await this.options.chatStore.listActiveMessages(sessionId)
+    const query =
+      [...messages].reverse().find((message) => message.role === MessageRole.USER)?.content ?? ''
+    const catalog = this.options.skillRegistry.refresh()
+    const decision = this.skillResolver.resolve(query, catalog)
+    const compiled = this.skillCompiler.compile(decision)
+    const snapshot: SkillTurnSnapshot = {
+      catalogChecksum: catalog.checksum,
+      appliedSkills: compiled.runtimeState.appliedSkills,
+      activePhase: compiled.runtimeState.activePhase,
+      planningInjection: compiled.planningInjection,
+      runtimeGuards: compiled.runtimeGuards,
+      decisionReason: compiled.runtimeState.decisionReason,
+    }
+    const nextMemory = {
+      ...workingMemory,
+      appliedSkills: [...snapshot.appliedSkills],
+    }
+    await this.options.chatStore.updateTurn(sessionId, turnId, {
+      skillSnapshot: snapshot,
+      skillGuidance: snapshot.planningInjection,
+      skillGuards: snapshot.runtimeGuards,
+      workingMemory: nextMemory,
+    })
+    // 空 catalog 不产生一条空审计消息：除了没有可观测信息外，UI 也无需因
+    // 一个永远不会展示的 system message 触发历史重绘。存在有效或无效文件时，
+    // 则保留完整 resolve 审计（包括 rejected/invalid 的诊断）。
+    if (catalog.loadedSkills.length === 0 && catalog.invalidSkills.length === 0)
+      return { snapshot, workingMemory: nextMemory }
+    await this.options.chatStore.addMessage({
+      conversation_id: sessionId,
+      role: MessageRole.SYSTEM,
+      content: JSON.stringify({
+        event: 'skill.resolve.complete',
+        applied_skills: snapshot.appliedSkills,
+        rejected: decision.rejected,
+        confidence: decision.confidence,
+        skill_decision_reason: decision.reason,
+        active_phase: snapshot.activePhase,
+        guards_applied: snapshot.runtimeGuards.map((guard) => ({
+          guard_id: guard.guardId,
+          skill_name: guard.skillName,
+          guard_type: guard.guardType,
+          action: guard.action,
+          reason: guard.reason,
+        })),
+      }),
+      turn_id: turnId,
+      subtype: MessageSubtype.SKILL_EVENT,
+      tool_call_id: null,
+      meta: '{}',
+      agent_type: '',
+    })
+    if (snapshot.appliedSkills.length > 0)
+      await this.emit(sessionId, turnId, RuntimeEventType.SKILL_RESOLVED, {
+        applied_skills: snapshot.appliedSkills,
+        active_phase: snapshot.activePhase,
+        guards_applied: snapshot.runtimeGuards.length,
+      })
+    return { snapshot, workingMemory: nextMemory }
   }
 
   async submitMessage(
@@ -334,6 +464,14 @@ export class AgentRuntime {
         await transition(TurnPhase.BUILDING_CONTEXT, 'start')
       else if (phase === TurnPhase.AWAITING_USER_INPUT)
         await transition(TurnPhase.CALLING_MODEL, 'resume user input')
+      const initializedSkills = await this.initializeSkillSnapshot(
+        sessionId,
+        turnId,
+        persisted,
+        workingMemory,
+      )
+      const skillSnapshot = initializedSkills.snapshot
+      workingMemory = initializedSkills.workingMemory
       const intent: TaskIntent = {
         tier: ModelTier.IMPLEMENTATION,
         purpose: 'implement',
@@ -466,7 +604,8 @@ export class AgentRuntime {
               budget: tracker.budget,
               signal: runSignal,
               mode,
-              ...(persisted.skillGuards ? { skillGuards: persisted.skillGuards } : {}),
+              skillGuards: skillSnapshot?.runtimeGuards ?? [],
+              turnState: { runtime_guards: skillSnapshot?.runtimeGuards ?? [] },
             })
           }
           lastToolError = result.error_code
@@ -483,6 +622,7 @@ export class AgentRuntime {
                 ok: result.ok,
                 error_code: result.error_code,
                 ...(result.data ?? {}),
+                ...skillGuardAuditMeta(result),
               }),
               agent_type: '',
             })
@@ -554,8 +694,9 @@ export class AgentRuntime {
           phase: TurnPhase.BUILDING_CONTEXT,
           mode,
           turnNumber,
-          appliedSkills: [],
-          activePhase: 'implementation',
+          appliedSkills: skillSnapshot?.appliedSkills ?? [],
+          activePhase: skillSnapshot?.activePhase ?? 'discover',
+          skillGuidance: skillSnapshot?.planningInjection ?? '',
           budget: tracker.budget,
           budgetConsumption: tracker.snapshot(),
           workingMemory,
@@ -604,7 +745,11 @@ export class AgentRuntime {
           maxTokens,
           messages: envelope.conversation,
           system: renderSystemPrompt(envelope.system),
-          tools: finalizationAttempted ? [] : envelope.tools,
+          tools: finalizationAttempted
+            ? []
+            : envelope.tools.filter((tool) =>
+                shouldAdvertiseTool(skillSnapshot.runtimeGuards, tool.name),
+              ),
           ...(thinking === undefined ? {} : { thinking }),
         }
         const blocks: Array<Record<string, unknown>> = []
@@ -778,6 +923,8 @@ export class AgentRuntime {
             budget: tracker.budget,
             signal: runSignal,
             mode,
+            skillGuards: skillSnapshot?.runtimeGuards ?? [],
+            turnState: { runtime_guards: skillSnapshot?.runtimeGuards ?? [] },
           })
           if (call.name === 'todo_write' && Array.isArray(result.data?.['todos'])) {
             workingMemory = {
@@ -851,6 +998,7 @@ export class AgentRuntime {
               ok: result.ok,
               error_code: result.error_code,
               ...(result.data ?? {}),
+              ...skillGuardAuditMeta(result),
             }),
             agent_type: '',
           })

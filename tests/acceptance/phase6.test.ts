@@ -491,7 +491,7 @@ describe('Phase 6 验收：命令表与诚实降级', () => {
 
   it('未实现子系统仍然诚实地降级（不返回假数据、不假装成功）', async () => {
     const { run } = await build()
-    for (const raw of ['/skills', '/mcp', '/langfuse', '/api']) {
+    for (const raw of ['/mcp', '/langfuse', '/api']) {
       const result = await run(raw)
       expect(result.ok).toBe(false)
       expect(result.code).toBe(CommandResultCode.NOT_AVAILABLE)

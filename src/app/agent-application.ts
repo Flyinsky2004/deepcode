@@ -63,6 +63,7 @@ import {
 import { loadAppPolicy, type AppPolicy } from './policy.js'
 import { canAccess, ensureLocalPrincipal } from './principal.js'
 import type { ModelProvider } from '../core/provider.js'
+import { SkillRegistry } from '../skills/index.js'
 
 export interface AgentApplicationOptions {
   readonly paths?: AppPaths
@@ -82,6 +83,7 @@ export interface AgentApplicationOptions {
   readonly userInputService?: UserInputService
   readonly summarizer?: Summarizer
   readonly providerFactory?: (route: ResolvedModelRoute) => ModelProvider
+  readonly skillRegistry?: SkillRegistry
 }
 
 /** 一次 turn 提交的结果。 */
@@ -119,6 +121,7 @@ export class AgentApplication {
   readonly #budget: AgentBudget | undefined
   readonly #maxTurns: number | undefined
   readonly #providerFactory: (route: ResolvedModelRoute) => ModelProvider
+  readonly skillRegistry: SkillRegistry
   readonly #runtimes = new Map<PrincipalId, AgentRuntime>()
   readonly #controllers = new Map<SessionId, AbortController>()
   readonly #inFlight = new Map<SessionId, Promise<TurnResult>>()
@@ -152,6 +155,7 @@ export class AgentApplication {
     budget?: AgentBudget
     maxTurns?: number
     providerFactory: (route: ResolvedModelRoute) => ModelProvider
+    skillRegistry: SkillRegistry
   }) {
     this.paths = options.paths
     this.workspaceRoot = options.workspaceRoot
@@ -173,6 +177,7 @@ export class AgentApplication {
     this.#budget = options.budget
     this.#maxTurns = options.maxTurns
     this.#providerFactory = options.providerFactory
+    this.skillRegistry = options.skillRegistry
   }
 
   /**
@@ -266,6 +271,9 @@ export class AgentApplication {
     const providerFactory =
       options.providerFactory ??
       ((route: ResolvedModelRoute) => new AnthropicMessagesProvider({ provider: route.provider }))
+    const skillRegistry =
+      options.skillRegistry ?? new SkillRegistry(workspaceRoot, paths.global_dir)
+    skillRegistry.refresh()
 
     const app = new AgentApplication({
       paths,
@@ -288,6 +296,7 @@ export class AgentApplication {
       ...(options.budget === undefined ? {} : { budget: options.budget }),
       ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
       providerFactory,
+      skillRegistry,
     })
 
     // 恢复扫描：过期权限、`RUNNING → UNKNOWN` 的工具执行、以及
@@ -520,6 +529,23 @@ export class AgentApplication {
     return this.bus
   }
 
+  /** 刷新 skill 文件并返回脱敏的面板数据。 */
+  listSkills() {
+    const snapshot = this.skillRegistry.refresh()
+    return {
+      loadedSkills: snapshot.loadedSkills.map((skill) => ({
+        ref: skill.manifest.ref,
+        source: skill.manifest.source,
+        description: skill.manifest.description,
+        category: skill.manifest.category,
+        tags: skill.manifest.tags,
+        path: skill.path,
+      })),
+      invalidSkills: snapshot.invalidSkills,
+      checksum: snapshot.checksum,
+    }
+  }
+
   // ─ 回灌 ──────────────────────────────────────────────────────
 
   /**
@@ -741,6 +767,7 @@ export class AgentApplication {
       ...(this.#mode === undefined ? {} : { mode: this.#mode }),
       ...(this.#budget === undefined ? {} : { budget: this.#budget }),
       ...(this.#maxTurns === undefined ? {} : { maxTurns: this.#maxTurns }),
+      skillRegistry: this.skillRegistry,
     })
     this.#runtimes.set(principalId, runtime)
     return runtime

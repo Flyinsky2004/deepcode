@@ -197,6 +197,14 @@ export class CommandHostAdapter implements CommandHost {
     return Promise.resolve(this.#app.listSkills())
   }
 
+  listMcpServers() {
+    return Promise.resolve(this.#app.listMcpServers())
+  }
+
+  reconnectMcpServer(serverId: string) {
+    return this.#app.reconnectMcpServer(serverId)
+  }
+
   // ── 事件与审计 ──────────────────────────────────────────────────
 
   async publish(input: {

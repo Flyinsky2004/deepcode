@@ -1,5 +1,5 @@
 import { MessageSubtype, type CompactSummaryContent, type Message } from '../core/models.js'
-import { type ContextEnvelope, type RuntimeState } from '../core/context.js'
+import { type ContextEnvelope, type RuntimeState, type SystemPrompt } from '../core/context.js'
 import { type ToolDescriptor, type PermissionMode } from '../core/tool.js'
 import { renderSystemPrompt } from '../core/context.js'
 import { type ChatStore } from '../storage/chat-store.js'
@@ -10,15 +10,23 @@ export interface ContextBuilderOptions {
   readonly chatStore: ChatStore
   readonly tools: () => readonly ToolDescriptor[]
   readonly skillGuidance?: () => string | undefined
+  /** 子代理可注入自己的分层 system prompt；默认仍使用主代理提示。 */
+  readonly systemPrompt?: (
+    mode: PermissionMode,
+    skillGuidance?: string,
+    compactSummary?: string,
+  ) => SystemPrompt
 }
 export class ContextBuilder {
   readonly chatStore: ChatStore
   readonly tools: () => readonly ToolDescriptor[]
   readonly skillGuidance: (() => string | undefined) | undefined
+  readonly systemPrompt: NonNullable<ContextBuilderOptions['systemPrompt']>
   constructor(options: ContextBuilderOptions) {
     this.chatStore = options.chatStore
     this.tools = options.tools
     this.skillGuidance = options.skillGuidance
+    this.systemPrompt = options.systemPrompt ?? createSystemPrompt
   }
   async build(
     sessionId: Parameters<ChatStore['listActiveMessages']>[0],
@@ -32,7 +40,7 @@ export class ContextBuilder {
         .filter((m): m is NonNullable<ReturnType<typeof messageToApiFormat>> => m !== null),
     )
     const summary = latestSummary(active)
-    const system = createSystemPrompt(
+    const system = this.systemPrompt(
       mode,
       runtime.skillGuidance ?? this.skillGuidance?.(),
       summary?.summary,

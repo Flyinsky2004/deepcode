@@ -1,6 +1,11 @@
 import { AgentError, ErrorCode, isTransient, toAgentError } from '../core/errors.js'
 import { BudgetTracker, DEFAULT_BUDGET, type AgentBudget } from '../core/budget.js'
-import { EMPTY_WORKING_MEMORY, type RuntimeState, renderSystemPrompt } from '../core/context.js'
+import {
+  EMPTY_WORKING_MEMORY,
+  type RuntimeState,
+  type WorkingMemory,
+  renderSystemPrompt,
+} from '../core/context.js'
 import {
   createEventId,
   type PermissionRequestId,
@@ -32,6 +37,7 @@ import {
   PermissionMode,
   ToolExecutionStatus,
   type ToolResult,
+  type SkillGuardRef,
 } from '../core/tool.js'
 import type { EventSink, RuntimeEventEnvelope } from '../core/events.js'
 import { systemClock, type Clock } from '../core/time.js'
@@ -96,6 +102,16 @@ export interface AgentRuntimeOptions {
   readonly maxTurns?: number
   /** 可选 skill 注册表；未注入时新 turn 不解析 skill，恢复时保留已落盘的守护。 */
   readonly skillRegistry?: SkillRegistry
+  /** 子代理使用的显式路由意图；主代理缺省为 implementation。 */
+  readonly intent?: TaskIntent
+  /** 子代理上下文策略产出的独立工作记忆起点。 */
+  readonly initialWorkingMemory?: WorkingMemory
+  /** 子代理从父 turn 继承的运行时 guard 快照。 */
+  readonly inheritedSkillGuards?: readonly SkillGuardRef[]
+  readonly allowedReadRoots?: readonly string[]
+  readonly allowedWriteRoots?: readonly string[]
+  readonly agentType?: string
+  readonly subagentDepth?: number
 }
 
 export class AgentRuntime {
@@ -143,7 +159,9 @@ export class AgentRuntime {
         appliedSkills: persisted?.workingMemory.appliedSkills ?? [],
         activePhase: 'discover',
         planningInjection: persisted?.skillGuidance ?? '',
-        runtimeGuards: Object.freeze([...(persisted?.skillGuards ?? [])]),
+        runtimeGuards: Object.freeze([
+          ...(persisted?.skillGuards ?? this.options.inheritedSkillGuards ?? []),
+        ]),
         decisionReason: '',
       }
       await this.options.chatStore.updateTurn(sessionId, turnId, {
@@ -165,7 +183,15 @@ export class AgentRuntime {
       appliedSkills: compiled.runtimeState.appliedSkills,
       activePhase: compiled.runtimeState.activePhase,
       planningInjection: compiled.planningInjection,
-      runtimeGuards: compiled.runtimeGuards,
+      runtimeGuards: Object.freeze([
+        ...(this.options.inheritedSkillGuards ?? []),
+        ...compiled.runtimeGuards.filter(
+          (guard) =>
+            !(this.options.inheritedSkillGuards ?? []).some(
+              (inherited) => inherited.guardId === guard.guardId,
+            ),
+        ),
+      ]),
       decisionReason: compiled.runtimeState.decisionReason,
     }
     const nextMemory = {
@@ -205,7 +231,7 @@ export class AgentRuntime {
       subtype: MessageSubtype.SKILL_EVENT,
       tool_call_id: null,
       meta: '{}',
-      agent_type: '',
+      agent_type: this.options.agentType ?? '',
     })
     if (snapshot.appliedSkills.length > 0)
       await this.emit(sessionId, turnId, RuntimeEventType.SKILL_RESOLVED, {
@@ -244,7 +270,7 @@ export class AgentRuntime {
         prompt,
         this.options.principalId,
         budget,
-        EMPTY_WORKING_MEMORY,
+        this.options.initialWorkingMemory ?? EMPTY_WORKING_MEMORY,
       )
       const turnId = persisted.turnId as TurnId
       const { turnNumber } = persisted
@@ -472,7 +498,7 @@ export class AgentRuntime {
       )
       const skillSnapshot = initializedSkills.snapshot
       workingMemory = initializedSkills.workingMemory
-      const intent: TaskIntent = {
+      const intent: TaskIntent = this.options.intent ?? {
         tier: ModelTier.IMPLEMENTATION,
         purpose: 'implement',
         requiresTools: true,
@@ -601,11 +627,24 @@ export class AgentRuntime {
               principalId: this.options.principalId,
               input: record.input,
               workspaceRoot: this.options.workspaceRoot,
+              ...(this.options.allowedReadRoots === undefined
+                ? {}
+                : { allowedReadRoots: this.options.allowedReadRoots }),
+              ...(this.options.allowedWriteRoots === undefined
+                ? {}
+                : { allowedWriteRoots: this.options.allowedWriteRoots }),
               budget: tracker.budget,
               signal: runSignal,
               mode,
               skillGuards: skillSnapshot?.runtimeGuards ?? [],
-              turnState: { runtime_guards: skillSnapshot?.runtimeGuards ?? [] },
+              turnState: {
+                runtime_guards: skillSnapshot?.runtimeGuards ?? [],
+                permission_mode: mode,
+                working_memory: workingMemory,
+                subagent_depth: this.options.subagentDepth ?? 0,
+                budget_consumption: tracker.snapshot(),
+                cumulative_input_tokens: tracker.cumulativeInputTokens,
+              },
             })
           }
           lastToolError = result.error_code
@@ -624,7 +663,7 @@ export class AgentRuntime {
                 ...(result.data ?? {}),
                 ...skillGuardAuditMeta(result),
               }),
-              agent_type: '',
+              agent_type: this.options.agentType ?? '',
             })
             await this.emit(sessionId, turnId, RuntimeEventType.TOOL_RESULT, {
               tool_use_id: record.toolCallId,
@@ -880,6 +919,16 @@ export class AgentRuntime {
           }
           return await finish(TurnStatus.FAILED, TerminalReason.ERROR, e.message)
         }
+        // Provider 可能在收到 abort 后正常结束 async iterator，而非抛错。
+        // 此时仍必须按取消（或墙钟预算）收尾，不能误报 COMPLETED。
+        if (runSignal.aborted)
+          return await (wallTimeout.timedOut()
+            ? finish(
+                TurnStatus.PARTIAL,
+                TerminalReason.BUDGET_EXCEEDED,
+                'budget exceeded: wallTime',
+              )
+            : finish(TurnStatus.CANCELLED, TerminalReason.CANCELLED, null))
         const usage = typeof streamUsage !== 'undefined' ? streamUsage : undefined
         if (usage) tracker.recordUsage(usage)
         if (blocks.length > 0)
@@ -891,7 +940,7 @@ export class AgentRuntime {
             subtype: toolCalls.length ? MessageSubtype.TOOL_CALL : MessageSubtype.NORMAL,
             tool_call_id: null,
             meta: '{}',
-            agent_type: '',
+            agent_type: this.options.agentType ?? '',
           })
         if (toolCalls.length === 0)
           return await (finalizationAttempted
@@ -920,11 +969,24 @@ export class AgentRuntime {
             principalId: this.options.principalId,
             input: call.input,
             workspaceRoot: this.options.workspaceRoot,
+            ...(this.options.allowedReadRoots === undefined
+              ? {}
+              : { allowedReadRoots: this.options.allowedReadRoots }),
+            ...(this.options.allowedWriteRoots === undefined
+              ? {}
+              : { allowedWriteRoots: this.options.allowedWriteRoots }),
             budget: tracker.budget,
             signal: runSignal,
             mode,
             skillGuards: skillSnapshot?.runtimeGuards ?? [],
-            turnState: { runtime_guards: skillSnapshot?.runtimeGuards ?? [] },
+            turnState: {
+              runtime_guards: skillSnapshot?.runtimeGuards ?? [],
+              permission_mode: mode,
+              working_memory: workingMemory,
+              subagent_depth: this.options.subagentDepth ?? 0,
+              budget_consumption: tracker.snapshot(),
+              cumulative_input_tokens: tracker.cumulativeInputTokens,
+            },
           })
           if (call.name === 'todo_write' && Array.isArray(result.data?.['todos'])) {
             workingMemory = {
@@ -1000,7 +1062,7 @@ export class AgentRuntime {
               ...(result.data ?? {}),
               ...skillGuardAuditMeta(result),
             }),
-            agent_type: '',
+            agent_type: this.options.agentType ?? '',
           })
           await this.emit(sessionId, turnId, RuntimeEventType.TOOL_RESULT, {
             tool_use_id: call.id,

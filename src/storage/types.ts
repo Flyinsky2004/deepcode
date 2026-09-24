@@ -13,6 +13,7 @@ import type {
 } from '../core/tool.js'
 import type { PersistedUserInputRequest } from '../core/input.js'
 import type { PhaseTransition, TurnPhase, TurnResult } from '../core/turn.js'
+import type { SubAgentSession } from '../subagents/models.js'
 
 /** 全局档位配置。新配置使用稳定的 provider/model ID。 */
 export interface TierAssignment {
@@ -132,6 +133,8 @@ export interface RuntimeDocument {
   readonly tool_executions: readonly PersistedToolExecution[]
   readonly idempotency: readonly IdempotencyRecord[]
   readonly events: readonly RuntimeEventEnvelope[]
+  /** 子代理独立会话；保存定义快照、预算和 continuation，供重启恢复。 */
+  readonly subagent_sessions: readonly SubAgentSession[]
 }
 
 /** 工作区会话文件。conversations/messages 与旧实现逐字兼容。 */
@@ -155,4 +158,6 @@ export interface RecoverySnapshot {
    */
   readonly pendingUserInputs: readonly PersistedUserInputRequest[]
   readonly unknownExecutions: readonly PersistedToolExecution[]
+  /** 兼容旧调用方：只有实际存在可恢复子代理时才出现。 */
+  readonly recoverableSubagents?: readonly SubAgentSession[]
 }

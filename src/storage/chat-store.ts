@@ -21,6 +21,7 @@ import {
   type UserInputResolution,
 } from '../core/input.js'
 import { ACTIVE_PHASES, canTransition, TurnPhase } from '../core/turn.js'
+import { SubAgentSessionStatus, type SubAgentSession } from '../subagents/models.js'
 import { systemClock, type Clock } from '../core/time.js'
 import { type AppPaths } from './paths.js'
 import type { RuntimeEventEnvelope } from '../core/events.js'
@@ -46,6 +47,7 @@ const EMPTY_RUNTIME: RuntimeDocument = {
   tool_executions: [],
   idempotency: [],
   events: [],
+  subagent_sessions: [],
 }
 
 const asString = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback)
@@ -141,6 +143,9 @@ function normalizeRuntime(value: unknown): RuntimeDocument {
       isRecord,
     ) as unknown as readonly IdempotencyRecord[],
     events: asArray(value['events']).filter(isRuntimeEvent) as unknown as RuntimeDocument['events'],
+    subagent_sessions: asArray(value['subagent_sessions']).filter(
+      isRecord,
+    ) as unknown as readonly SubAgentSession[],
   }
 }
 
@@ -455,7 +460,8 @@ export class ChatStore {
           source: 'chat',
         })
       const turnNumber = conversation.current_turn + 1
-      const turnId = createTurnId(sessionId, turnNumber)
+      const isSubAgent = conversation.parent_conversation_id !== ''
+      const turnId = createTurnId(sessionId, turnNumber, { isSubAgent })
       const user = {
         id: createMessageId(),
         conversation_id: sessionId,
@@ -466,7 +472,7 @@ export class ChatStore {
         subtype: MessageSubtype.NORMAL,
         tool_call_id: null,
         meta: '{}',
-        agent_type: '',
+        agent_type: conversation.agent_type,
       } as Message
       const turn: PersistedTurn = {
         sessionId,
@@ -752,6 +758,77 @@ export class ChatStore {
     return (await this.read()).runtime.idempotency.find((r) => r.key === key)
   }
 
+  async addSubAgentSession(session: SubAgentSession): Promise<void> {
+    await this.update((doc) => {
+      const existing = doc.runtime.subagent_sessions.find(
+        (item) => item.sessionId === session.sessionId,
+      )
+      if (existing) {
+        if (JSON.stringify(existing) !== JSON.stringify(session))
+          throw new AgentError({
+            code: ErrorCode.INVALID_STATE_TRANSITION,
+            message: `sub-agent session id collision: ${session.sessionId}`,
+            source: 'chat',
+          })
+        return doc
+      }
+      return {
+        ...doc,
+        runtime: {
+          ...doc.runtime,
+          revision: doc.runtime.revision + 1,
+          subagent_sessions: [...doc.runtime.subagent_sessions, session],
+        },
+      }
+    })
+  }
+
+  async updateSubAgentSession(
+    sessionId: string,
+    patch: Partial<SubAgentSession>,
+  ): Promise<SubAgentSession> {
+    let result: SubAgentSession | undefined
+    await this.update((doc) => ({
+      ...doc,
+      runtime: {
+        ...doc.runtime,
+        revision: doc.runtime.revision + 1,
+        subagent_sessions: doc.runtime.subagent_sessions.map((session) => {
+          if (session.sessionId !== sessionId) return session
+          result = { ...session, ...patch }
+          return result
+        }),
+      },
+    }))
+    if (!result)
+      throw new AgentError({
+        code: ErrorCode.SESSION_NOT_FOUND,
+        message: `sub-agent session not found: ${sessionId}`,
+        source: 'chat',
+      })
+    return result
+  }
+
+  async getSubAgentSession(sessionId: string): Promise<SubAgentSession> {
+    const found = (await this.read()).runtime.subagent_sessions.find(
+      (session) => session.sessionId === sessionId,
+    )
+    if (!found)
+      throw new AgentError({
+        code: ErrorCode.SESSION_NOT_FOUND,
+        message: `sub-agent session not found: ${sessionId}`,
+        source: 'chat',
+      })
+    return found
+  }
+
+  async listSubAgentSessions(parentSessionId?: string): Promise<readonly SubAgentSession[]> {
+    const sessions = (await this.read()).runtime.subagent_sessions
+    return parentSessionId === undefined
+      ? sessions
+      : sessions.filter((session) => session.parentSessionId === parentSessionId)
+  }
+
   async recover(): Promise<RecoverySnapshot> {
     const doc = await this.read()
     const now = this.clock.nowMs()
@@ -818,6 +895,29 @@ export class ChatStore {
           ),
         },
       }))
+    const recoverableSubagents = doc.runtime.subagent_sessions
+      .filter(
+        (session) =>
+          session.status === SubAgentSessionStatus.QUEUED ||
+          session.status === SubAgentSessionStatus.RUNNING,
+      )
+      .map((session) => ({
+        ...session,
+        status: SubAgentSessionStatus.RECOVERABLE,
+        updatedAt: this.clock.now(),
+      }))
+    if (recoverableSubagents.length > 0)
+      await this.update((current) => ({
+        ...current,
+        runtime: {
+          ...current.runtime,
+          revision: current.runtime.revision + 1,
+          subagent_sessions: current.runtime.subagent_sessions.map(
+            (session) =>
+              recoverableSubagents.find((item) => item.sessionId === session.sessionId) ?? session,
+          ),
+        },
+      }))
     const allUnknown = doc.runtime.tool_executions.filter(
       (r) => r.status === ToolExecutionStatus.UNKNOWN,
     )
@@ -843,6 +943,7 @@ export class ChatStore {
         ...allUnknown,
         ...unknown.filter((u) => !allUnknown.some((x) => x.executionId === u.executionId)),
       ],
+      ...(recoverableSubagents.length === 0 ? {} : { recoverableSubagents }),
     }
   }
 }

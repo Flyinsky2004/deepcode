@@ -131,6 +131,12 @@ function normalize(raw: Readonly<Record<string, unknown>>): ConfigDocument {
       source: 'config',
     })
   }
+  if (raw['mcp_servers'] !== undefined && !Array.isArray(raw['mcp_servers']))
+    throw new AgentError({
+      code: ErrorCode.MCP_CONFIG_INVALID,
+      message: 'mcp_servers must be an array',
+      source: 'config',
+    })
   // Legacy channels contain plaintext `api_key`; do not guess an environment
   // variable name or silently migrate secrets. They remain preserved under the
   // legacy field and must be explicitly re-entered as a SecretRef.

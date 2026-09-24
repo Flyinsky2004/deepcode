@@ -453,7 +453,11 @@ export class ToolExecutor {
       result = await this.awaitUserInput(toolName, options, result, timeout.signal)
 
     let finalRecord: Partial<PersistedToolExecution> = {
-      status: result.ok ? ToolExecutionStatus.SUCCESS : ToolExecutionStatus.FAILURE,
+      status: result.ok
+        ? ToolExecutionStatus.SUCCESS
+        : result.error_code === ErrorCode.TOOL_EXECUTION_UNKNOWN
+          ? ToolExecutionStatus.UNKNOWN
+          : ToolExecutionStatus.FAILURE,
       finishedAt: this.clock.now(),
       elapsedMs: this.clock.nowMs() - started,
       errorCode: result.error_code,

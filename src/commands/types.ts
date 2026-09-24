@@ -225,6 +225,28 @@ export interface CommandHost {
     readonly checksum: string
   }>
 
+  /** 当前 MCP 连接与工具目录状态。 */
+  listMcpServers?(): Promise<
+    readonly {
+      readonly name: string
+      readonly status: string
+      readonly transport: string
+      readonly toolCount: number
+      readonly failures: number
+      readonly circuitOpenUntil: number | null
+      readonly error: string | null
+    }[]
+  >
+  reconnectMcpServer?(serverId: string): Promise<{
+    readonly name: string
+    readonly status: string
+    readonly transport: string
+    readonly toolCount: number
+    readonly failures: number
+    readonly circuitOpenUntil: number | null
+    readonly error: string | null
+  }>
+
   // ── 事件与审计 ────────────────────────────────────────────────
   publish(input: {
     readonly sessionId: SessionId | undefined

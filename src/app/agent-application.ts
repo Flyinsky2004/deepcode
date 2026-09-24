@@ -64,6 +64,13 @@ import { loadAppPolicy, type AppPolicy } from './policy.js'
 import { canAccess, ensureLocalPrincipal } from './principal.js'
 import type { ModelProvider } from '../core/provider.js'
 import { SkillRegistry } from '../skills/index.js'
+import { SubAgentManager, SubAgentRegistry, createSubAgentTool } from '../subagents/index.js'
+import {
+  McpManager,
+  parseMcpServerConfigs,
+  type McpConnectionFactory,
+  type McpServerConfig,
+} from '../mcp/index.js'
 
 export interface AgentApplicationOptions {
   readonly paths?: AppPaths
@@ -84,6 +91,8 @@ export interface AgentApplicationOptions {
   readonly summarizer?: Summarizer
   readonly providerFactory?: (route: ResolvedModelRoute) => ModelProvider
   readonly skillRegistry?: SkillRegistry
+  readonly subAgentRegistry?: SubAgentRegistry
+  readonly mcpFactoryFor?: (config: McpServerConfig) => McpConnectionFactory
 }
 
 /** 一次 turn 提交的结果。 */
@@ -122,6 +131,9 @@ export class AgentApplication {
   readonly #maxTurns: number | undefined
   readonly #providerFactory: (route: ResolvedModelRoute) => ModelProvider
   readonly skillRegistry: SkillRegistry
+  readonly subAgentRegistry: SubAgentRegistry
+  readonly subAgentManager: SubAgentManager
+  readonly mcpManager: McpManager
   readonly #runtimes = new Map<PrincipalId, AgentRuntime>()
   readonly #controllers = new Map<SessionId, AbortController>()
   readonly #inFlight = new Map<SessionId, Promise<TurnResult>>()
@@ -156,6 +168,9 @@ export class AgentApplication {
     maxTurns?: number
     providerFactory: (route: ResolvedModelRoute) => ModelProvider
     skillRegistry: SkillRegistry
+    subAgentRegistry: SubAgentRegistry
+    subAgentManager: SubAgentManager
+    mcpManager: McpManager
   }) {
     this.paths = options.paths
     this.workspaceRoot = options.workspaceRoot
@@ -178,6 +193,9 @@ export class AgentApplication {
     this.#maxTurns = options.maxTurns
     this.#providerFactory = options.providerFactory
     this.skillRegistry = options.skillRegistry
+    this.subAgentRegistry = options.subAgentRegistry
+    this.subAgentManager = options.subAgentManager
+    this.mcpManager = options.mcpManager
   }
 
   /**
@@ -274,6 +292,35 @@ export class AgentApplication {
     const skillRegistry =
       options.skillRegistry ?? new SkillRegistry(workspaceRoot, paths.global_dir)
     skillRegistry.refresh()
+    const subAgentRegistry =
+      options.subAgentRegistry ?? new SubAgentRegistry(workspaceRoot, paths.global_dir)
+    subAgentRegistry.refresh()
+    const subAgentManager = new SubAgentManager({
+      definitions: subAgentRegistry,
+      tools: registry,
+      chatStore,
+      router,
+      providerFactory,
+      eventSink: bus,
+      workspaceRoot,
+      principalId,
+      skillRegistry,
+      clock,
+      maxParallel: 4,
+      toolTimeoutMs: policy.toolTimeoutMs,
+      toolOutputLimitChars: policy.toolOutputLimitChars,
+    })
+    if (registry.get('sub_agent') === undefined)
+      registry.register(createSubAgentTool(subAgentManager))
+
+    const mcpConfigs = parseMcpServerConfigs(config.mcp_servers)
+    const mcpManager = new McpManager({
+      configs: mcpConfigs,
+      registry,
+      clock,
+      ...(options.mcpFactoryFor === undefined ? {} : { factoryFor: options.mcpFactoryFor }),
+    })
+    await mcpManager.initialize()
 
     const app = new AgentApplication({
       paths,
@@ -297,6 +344,9 @@ export class AgentApplication {
       ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
       providerFactory,
       skillRegistry,
+      subAgentRegistry,
+      subAgentManager,
+      mcpManager,
     })
 
     // 恢复扫描：过期权限、`RUNNING → UNKNOWN` 的工具执行、以及
@@ -315,6 +365,7 @@ export class AgentApplication {
         pendingPermissions: [],
         pendingUserInputs: [],
         unknownExecutions: [],
+        recoverableSubagents: [],
       }
     )
   }
@@ -546,6 +597,18 @@ export class AgentApplication {
     }
   }
 
+  listSubAgents(parentSessionId?: string) {
+    return this.subAgentManager.list(parentSessionId)
+  }
+
+  listMcpServers() {
+    return this.mcpManager.statuses()
+  }
+
+  reconnectMcpServer(serverId: string) {
+    return this.mcpManager.reconnect(serverId)
+  }
+
   // ─ 回灌 ──────────────────────────────────────────────────────
 
   /**
@@ -726,6 +789,8 @@ export class AgentApplication {
     if (this.#disposed) return
     this.#disposed = true
     for (const controller of this.#controllers.values()) controller.abort()
+    this.subAgentManager.shutdown()
+    void this.mcpManager.shutdown()
     this.bus.close()
     this.eventLog.close()
   }

@@ -3,6 +3,7 @@ import { type Tool, type ToolDescriptor } from '../core/tool.js'
 
 export class ToolRegistry {
   readonly #tools = new Map<string, Tool>()
+  #catalogVersion = 0
   register(tool: Tool): void {
     if (this.#tools.has(tool.descriptor.name))
       throw new AgentError({
@@ -11,9 +12,16 @@ export class ToolRegistry {
         source: 'tools',
       })
     this.#tools.set(tool.descriptor.name, tool)
+    this.#catalogVersion += 1
   }
   replace(tool: Tool): void {
     this.#tools.set(tool.descriptor.name, tool)
+    this.#catalogVersion += 1
+  }
+  unregister(name: string): boolean {
+    const removed = this.#tools.delete(name)
+    if (removed) this.#catalogVersion += 1
+    return removed
   }
   get(name: string): Tool | undefined {
     return this.#tools.get(name)
@@ -33,5 +41,8 @@ export class ToolRegistry {
   }
   names(): readonly string[] {
     return [...this.#tools.keys()]
+  }
+  get catalogVersion(): number {
+    return this.#catalogVersion
   }
 }

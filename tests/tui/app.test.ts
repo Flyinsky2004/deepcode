@@ -420,7 +420,7 @@ describe('命令与面板', () => {
     expect(frame).toContain('向 DeepCode 提问，或输入 / 查看命令')
   })
 
-  it('诚实降级：/mcp 显示原因而不是"未知命令"', async () => {
+  it('/mcp 显示真实状态而不是"未知命令"', async () => {
     const { controller } = await makeController()
     const { lastFrame, stdin } = render(createElement(TuiApp, { controller }))
     await waitForFrame(lastFrame, 'Message')
@@ -429,7 +429,7 @@ describe('命令与面板', () => {
     stdin.write('\r')
     const frame = await waitForFrame(lastFrame, '## /mcp')
     expect(frame).toContain('MCP')
-    expect(frame).toContain('尚未实现')
+    expect(frame).toContain('尚未配置')
     expect(frame).not.toContain('Unknown command')
   })
 

@@ -107,6 +107,87 @@ function skillsCommand(): CommandDefinition {
   }
 }
 
+function mcpCommand(): CommandDefinition {
+  return {
+    name: 'mcp',
+    description: '查看或重连 MCP 服务',
+    parameters: {
+      positionals: [
+        {
+          name: 'action',
+          required: false,
+          description: 'list 或 reconnect',
+          schema: z.enum(['list', 'reconnect']),
+        },
+        {
+          name: 'server',
+          required: false,
+          description: '要重连的 server 名称',
+          schema: z.string().min(1),
+        },
+      ],
+    },
+    interrupt: 'never',
+    permission: { kind: 'always' },
+    auditEvent: 'command_received',
+    idempotency: { kind: 'keyed', ttlMs: 60_000 },
+    persistResult: false,
+    execute: async (ctx): Promise<CommandResult> => {
+      if (ctx.args['action'] === 'reconnect') {
+        const server = ctx.args['server']
+        if (typeof server !== 'string')
+          return {
+            ok: false,
+            code: CommandResultCode.INVALID_ARGUMENTS,
+            errorCode: ErrorCode.INVALID_COMMAND_ARGUMENTS,
+            text: '用法：/mcp reconnect <server>',
+          }
+        const status = await ctx.host.reconnectMcpServer?.(server)
+        if (status === undefined)
+          return {
+            ok: false,
+            code: CommandResultCode.NOT_AVAILABLE,
+            errorCode: ErrorCode.COMMAND_NOT_AVAILABLE,
+            text: '当前客户端未提供 MCP 重连能力。',
+          }
+        return {
+          ok: status.status === 'connected',
+          code: status.status === 'connected' ? CommandResultCode.OK : CommandResultCode.FAILED,
+          text: `${status.name}：${status.status}（${status.toolCount} tools）${status.error ? `\n${status.error}` : ''}`,
+          data: { server: status },
+        }
+      }
+      const servers = await ctx.host.listMcpServers?.()
+      if (servers === undefined)
+        return {
+          ok: false,
+          code: CommandResultCode.NOT_AVAILABLE,
+          errorCode: ErrorCode.COMMAND_NOT_AVAILABLE,
+          text: '当前客户端未提供 MCP 管理器。',
+        }
+      if (servers.length === 0)
+        return {
+          ok: true,
+          code: CommandResultCode.PANEL,
+          text: '尚未配置 MCP server。',
+          data: { servers: [] },
+        }
+      return {
+        ok: true,
+        code: CommandResultCode.PANEL,
+        text: servers
+          .map(
+            (server) =>
+              `- **${server.name}** \`${server.status}\` · ${server.transport} · ${server.toolCount} tools` +
+              (server.error ? `\n  ${server.error}` : ''),
+          )
+          .join('\n'),
+        data: { servers },
+      }
+    },
+  }
+}
+
 /** `/sessions` —— 列出本 principal 可见的会话。 */
 function sessionsCommand(): CommandDefinition {
   return {
@@ -256,12 +337,7 @@ export function createBuiltinCommandRegistry(): CommandRegistry {
     // 它们**存在**（用户在补全列表里能看到、能理解为什么不可用），
     // 但绝不假装成功。
     skillsCommand(),
-    unavailableCommand({
-      name: 'mcp',
-      description: '查看 MCP 服务',
-      subsystem: 'MCP',
-      phase: 'Phase 10',
-    }),
+    mcpCommand(),
     unavailableCommand({
       name: 'langfuse',
       description: '切换可观测性上报',

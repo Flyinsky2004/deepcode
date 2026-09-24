@@ -2,7 +2,7 @@
 
 跨客户端、跨模型的本地 Agent runtime。TypeScript 实现。
 
-> **当前状态：Phase 0–8 已实现；Sub-agent、MCP（Phase 9–10）仍按进度表排期。**
+> **当前状态：Phase 0–10 主流程已实现；`readonly` OS 沙箱与 Phase 11 质量门禁仍待完成。**
 > 已具备本地存储/恢复、Anthropic 流式 provider、turn 主循环、统一权限工具链、结构化上下文压缩、
 > slash command 层与三端（TUI / Web UI / CLI）共用的 `AgentApplication`。
 > 真实 Anthropic endpoint 的连通验收仍需用户凭据（Phase 2 的验收项）。
@@ -94,6 +94,65 @@ Check the resulting content.
 
 匹配使用旧实现的确定性关键词规则，当前只识别小写 ASCII；纯中文请求不会命中 skill。
 建议在请求中加入对应的英文触发词（示例为 `edit`）。
+
+## Sub-agent
+
+内置 `general-purpose`、`code-reviewer`、`debugger`、`test-runner` 四个角色。模型通过
+`sub_agent` 工具发起前台、后台或并行任务；子会话使用独立 transcript，可查询、取消，并可用
+`continuation_handle` 在重启后恢复。自定义定义放在工作区
+`.deepcode/subagents/**/*.md` 或 `~/.deepcode/subagents/**/*.md`：
+
+```markdown
+---
+type: dependency-auditor
+version: 1.0.0
+description: Audit dependency usage without editing files
+allowed_tools: [file_read, glob, grep]
+denied_tools: [file_write, file_edit, sub_agent]
+context_policy: project-aware
+run_mode: background
+working_directory_policy: readonly
+visibility: summary
+budget:
+  max_model_calls: 6
+  max_tool_calls: 12
+---
+Audit only the delegated scope. Cite file evidence and list unresolved questions.
+```
+
+同名定义会在启动时明确报错。子代理权限、路径、skill guard 和预算只能从父 turn 继续收窄。
+
+## MCP
+
+在 `~/.deepcode/config.json` 顶层配置 `mcp_servers`。支持独立的 `stdio`、
+`streamable-http` 和兼容期 `sse` 连接：
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "local-tools",
+      "transport": "stdio",
+      "command": "/absolute/path/to/your-mcp-server",
+      "args": [],
+      "env": {},
+      "timeout_ms": 30000
+    },
+    {
+      "name": "remote-data",
+      "transport": "streamable-http",
+      "url": "https://example.com/mcp",
+      "headers": {}
+    }
+  ]
+}
+```
+
+远端工具以 `mcp_<server>_<tool>` 注册，并始终经过统一权限审批和执行审计。
+用 `/mcp` 查看连接状态，用 `/mcp reconnect <server>` 手动重连。单个 server 故障不会阻断其它
+server 或父 turn；无法确认副作用是否发生的调用会明确标记为 unknown，不会自动重放。
+`readonly` 子代理只开放只读工具，并在权限层拒绝写入；当前尚未提供独立的操作系统级沙箱，
+不要用它运行不受信任的本地可执行代码。
 
 ## 权威文档
 

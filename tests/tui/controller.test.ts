@@ -1023,17 +1023,17 @@ describe('端到端：命令', () => {
     expect(controller.getState().selection?.items[0]?.key).toBe('/workwith')
   })
 
-  it('诚实降级：/mcp 显示"子系统未实现"而不是"未知命令"', async () => {
+  it('/mcp 显示真实 MCP 状态而不是占位错误', async () => {
     const { controller } = await harness(textProviderFactory(['ok']))
     await controller.start()
     controller.setInput('/mcp')
     controller.applyKey({ name: 'enter' })
     await waitFor(() => controller.getState().panel !== undefined)
     const panel = controller.getState().panel!
-    // 标题是命令名（命令**存在**），正文照实说明原因
+    // 标题是命令名（命令**存在**），正文显示真实的空配置状态。
     expect(panel.title).toBe('/mcp')
     expect(panel.body).toContain('MCP')
-    expect(panel.body).toContain('尚未实现')
+    expect(panel.body).toContain('尚未配置')
   })
 
   it('无可选参数的命令走面板（/model 列出档位）', async () => {

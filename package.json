@@ -39,6 +39,7 @@
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm css:check && pnpm test"
   },
   "dependencies": {
+    "@modelcontextprotocol/client": "^2.1.0",
     "ink": "^7.1.1",
     "react": "^19.3.0",
     "ws": "^8.21.3",

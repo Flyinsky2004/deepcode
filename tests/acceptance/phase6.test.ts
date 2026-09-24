@@ -489,9 +489,13 @@ describe('Phase 6 验收：命令表与诚实降级', () => {
     }
   })
 
-  it('未实现子系统仍然诚实地降级（不返回假数据、不假装成功）', async () => {
+  it('MCP 已实现，其余未实现子系统仍然诚实地降级', async () => {
     const { run } = await build()
-    for (const raw of ['/mcp', '/langfuse', '/api']) {
+    const mcp = await run('/mcp')
+    expect(mcp.ok).toBe(true)
+    expect(mcp.code).toBe(CommandResultCode.PANEL)
+    expect(mcp.text).toContain('MCP')
+    for (const raw of ['/langfuse', '/api']) {
       const result = await run(raw)
       expect(result.ok).toBe(false)
       expect(result.code).toBe(CommandResultCode.NOT_AVAILABLE)

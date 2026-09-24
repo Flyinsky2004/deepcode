@@ -17,7 +17,7 @@
 - [x] 实现模型、工具、权限和持久化（Phase 1–5）
 - [x] 实现 Slash Commands 与 `/workwith`（见下方 Phase 6 段）
 - [x] 实现 TUI / Web UI（见下方「Phase 7 已完成」段）
-- [ ] 实现 Sub-agent、MCP
+- [x] 实现 Sub-agent、MCP（Phase 9–10）
 - [ ] 完成跨模型和恢复测试
 
 ## 设计约束
@@ -191,8 +191,7 @@
 
 - [x] 实现独立 CommandRegistry
 - [x] 实现 `/model`、`/compact`、`/sessions`、`/mcp`、`/skills`、`/init`
-      （`/skills` 于 Phase 8 接入真实注册表；`/mcp` 仍指向 Phase 10，返回
-      `COMMAND_NOT_AVAILABLE` + 具体原因）
+      （`/skills` 于 Phase 8 接入真实注册表；`/mcp` 于 Phase 10 接入真实连接状态与重连）
 - [x] 实现 `/workwith provider/model instruction`
 - [x] `/workwith` 只作用于下一项任务，不修改全局档位
 - [x] 实现模型存在性、能力、secret 和 enabled 校验
@@ -328,10 +327,10 @@ Phase 6 的主体（注册表、管线、`/workwith`、`/sessions`、`/clear`、
 契约层（`CommandDefinition` / `CommandHost` 端口 / 执行管线）、`/workwith` 与 model-ref 消歧
 已落地。内置 **15 条命令**：**12 条真实现**（`/workwith` `/init` `/sessions` `/clear`
 `/compact` `/language` `/model` 含写分支 `/thinking` `/reasoning` `/effort` `/1M`）、
-`/skills` 于 Phase 8 接入真实注册表；**3 条诚实降级**（`/mcp` `/langfuse` `/api`，返回 `COMMAND_NOT_AVAILABLE` +
-具体原因，不返回假数据、不用空列表假装成功）。
+`/skills` 于 Phase 8 接入真实注册表，`/mcp` 于 Phase 10 接入真实管理器；**2 条诚实降级**
+（`/langfuse` `/api`，返回 `COMMAND_NOT_AVAILABLE` + 具体原因，不返回假数据、不用空列表假装成功）。
 
-前两条降级指向确实尚未实现的子系统（Phase 10/11）；`/api` 是**刻意推迟**，
+`/langfuse` 指向尚未实现的可观测性子系统（Phase 11）；`/api` 是**刻意推迟**，
 理由见 ADR 0004 D10。
 
 ### 已知限制
@@ -382,32 +381,46 @@ Phase 6 的主体（注册表、管线、`/workwith`、`/sessions`、`/clear`、
 
 ## Phase 9：Sub-agent
 
-- [ ] 实现 SubAgentDefinition、SubAgentSession、SubAgentResult
-- [ ] 实现 foreground、background、parallel
-- [ ] 实现父权限与 definition 权限交集
-- [ ] 实现 minimal、project-aware、file-focused、conversation-aware、full-parent-summary
-- [ ] 实现 parent/isolated/readonly working directory
-- [ ] 实现独立 transcript、visibility、预算和取消传播
-- [ ] 实现 continuationHandle 和进程重启恢复
-- [ ] 实现 partial result、findings、changes、evidence、unresolved
-- [ ] 默认禁止递归 sub-agent
+- [x] 实现 SubAgentDefinition、SubAgentSession、SubAgentResult
+- [x] 实现 foreground、background、parallel
+- [x] 实现父权限与 definition 权限交集
+- [x] 实现 minimal、project-aware、file-focused、conversation-aware、full-parent-summary
+- [x] 实现 parent/isolated/readonly working directory
+- [x] 实现独立 transcript、visibility、预算和取消传播
+- [x] 实现 continuationHandle 和进程重启恢复
+- [x] 实现 partial result、findings、changes、evidence、unresolved
+- [x] 默认禁止递归 sub-agent
+- [ ] `readonly` 的操作系统级沙箱（当前已在 Tool Gate 禁写，不运行不受信任的可执行代码）
 
 ### 验收
 
-- 子代理内部 tool call 不污染父 transcript
-- 子代理不能获得父代理没有的权限和预算
-- max budget 时返回 partial，而不是伪装成 failed
-- background/parallel 子代理能被查询、取消和恢复
-- 父 turn 取消时子代理按策略取消
+- [x] 子代理内部 tool call 不污染父 transcript
+- [x] 子代理不能获得父代理没有的权限和预算
+- [x] max budget 时返回 partial，而不是伪装成 failed
+- [x] background/parallel 子代理能被查询、取消和恢复
+- [x] 父 turn 取消时子代理按策略取消
+
+子代理定义从工作区 `.deepcode/subagents/**/*.md`、用户目录
+`~/.deepcode/subagents/**/*.md` 与四个 builtin 角色加载；同名定义硬失败。每个子代理拥有独立
+conversation/turn/transcript、定义快照、工作记忆与预算，`chat.json.runtime.subagent_sessions`
+保存 continuation 和恢复状态。子代理工具注册表取父注册表、definition allow/deny、父路径范围、
+父剩余预算与 skill guard 的交集；默认移除递归委派，显式开启时仍受深度上限约束。
+`readonly` 目前在工具目录和权限引擎层禁写（包括移除 shell、网络和 MCP 能力），
+尚未提供独立的操作系统级只读沙箱；不应将其用于执行不受信任的本地程序。
 
 ## Phase 10：MCP
 
-- [ ] 实现 server 配置校验和重复名称拒绝
-- [ ] 实现独立连接、能力协商、timeout、reconnect、circuit breaker
-- [ ] 实现显式 tool-to-server mapping
-- [ ] MCP tool 进入统一 ToolRegistry、PermissionEngine 和 execution record
-- [ ] MCP tool catalog 支持版本和动态更新
-- [ ] MCP 失败不会破坏父 turn；unknown execution 必须显式处理
+- [x] 实现 server 配置校验和重复名称拒绝
+- [x] 实现独立连接、能力协商、timeout、reconnect、circuit breaker
+- [x] 实现显式 tool-to-server mapping
+- [x] MCP tool 进入统一 ToolRegistry、PermissionEngine 和 execution record
+- [x] MCP tool catalog 支持版本和动态更新
+- [x] MCP 失败不会破坏父 turn；unknown execution 必须显式处理
+
+MCP 使用官方 TypeScript SDK v2，支持 `stdio`、`streamable-http` 与兼容期 `sse`。
+server 并行连接、故障相互隔离；远端工具以显式 map 注册为 `mcp_<server>_<tool>`，目录变更会
+原子替换该 server 的工具并递增 catalog version。所有调用仍经过统一权限引擎与执行记录；
+非只读调用在断线/超时时记录为 `TOOL_EXECUTION_UNKNOWN`，不会自动重放。
 
 ## Phase 11：可观测性和质量门禁
 

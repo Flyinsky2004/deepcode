@@ -10,6 +10,7 @@
  */
 
 export * from './core/abort.js'
+export * from './core/observability.js'
 export * from './core/brand.js'
 export * from './core/budget.js'
 export * from './core/context.js'

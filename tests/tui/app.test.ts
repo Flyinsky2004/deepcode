@@ -240,6 +240,7 @@ describe('提交与流式', () => {
     await waitForFrame(lastFrame, '打个招呼')
     const frame = await waitForFrame(lastFrame, '最终的')
     expect(frame).toContain('回答')
+    expect(frame).not.toContain('**Assistant**')
     // 状态栏出现消息条数与用量记账
     expect(frame).toContain('msgs')
     expect(frame).toContain('↑100 ↓20')
@@ -307,11 +308,12 @@ describe('权限往返（渲染层闭环）', () => {
     const frame = await waitForFrame(lastFrame, 'Permission Required')
 
     // PERM_TITLE 的五个字段
-    expect(frame).toContain('**Tool:** file_write')
+    expect(frame).toContain('Tool: file_write')
     // 4 档风险徽标（ADR 0002 §七）：critical 也能渲染
-    expect(frame).toContain('**Risk:** CRITICAL')
-    expect(frame).toContain('**Args:** `{"path":"a.ts"}`')
-    expect(frame).toContain('**Reason:** tool requires approval')
+    expect(frame).toContain('Risk: CRITICAL')
+    expect(frame).toContain('Args: {"path":"a.ts"}')
+    expect(frame).toContain('Reason: tool requires approval')
+    expect(frame).not.toContain('**Tool:**')
     // 动作菜单（渲染进 #command-menu）
     expect(frame).toContain('Action required')
     expect(frame).toContain('Approve - allow this tool to execute')
@@ -427,7 +429,8 @@ describe('命令与面板', () => {
 
     stdin.write('/mcp')
     stdin.write('\r')
-    const frame = await waitForFrame(lastFrame, '## /mcp')
+    const frame = await waitForFrame(lastFrame, '尚未配置')
+    expect(frame).not.toContain('## /mcp')
     expect(frame).toContain('MCP')
     expect(frame).toContain('尚未配置')
     expect(frame).not.toContain('Unknown command')

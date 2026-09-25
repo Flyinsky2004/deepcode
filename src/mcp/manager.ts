@@ -1,6 +1,7 @@
 import { AgentError, ErrorCode, toAgentError } from '../core/errors.js'
 import type { ToolResult } from '../core/tool.js'
 import { systemClock, type Clock } from '../core/time.js'
+import type { ObservationSink } from '../core/observability.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import { createMcpToolAdapter, publicMcpToolName } from './adapter.js'
 import { createSdkMcpConnectionFactory } from './client.js'
@@ -28,6 +29,7 @@ export interface McpManagerOptions {
   readonly registry: ToolRegistry
   readonly clock?: Clock
   readonly factoryFor?: (config: McpServerConfig) => McpConnectionFactory
+  readonly observationSink?: ObservationSink
 }
 
 function contentText(content: readonly unknown[]): string {
@@ -110,6 +112,10 @@ export class McpManager {
       })
     state.circuitOpenUntil = null
     state.failures = 0
+    await this.#observe('mcp.reconnect.requested', {
+      server_id: state.config.name,
+      transport: state.config.transport,
+    })
     await this.#connect(state, true)
     return this.statuses().find((status) => status.name === serverId)!
   }
@@ -128,6 +134,12 @@ export class McpManager {
         meta: {},
       }
     const state = this.#states.get(mapping.serverId)!
+    const startedAt = this.clock.nowMs()
+    await this.#observe('mcp.tool.started', {
+      server_id: mapping.serverId,
+      tool_name: mapping.remote.name,
+      input,
+    })
     if (state.circuitOpenUntil !== null && state.circuitOpenUntil > this.clock.nowMs()) {
       state.status = McpConnectionStatus.CIRCUIT_OPEN
       return {
@@ -154,7 +166,7 @@ export class McpManager {
       state.failures = 0
       state.error = null
       state.status = McpConnectionStatus.CONNECTED
-      return {
+      const adapted: ToolResult = {
         ok: result.isError !== true,
         content: contentText(result.content),
         ...(typeof result.structuredContent === 'object' &&
@@ -165,6 +177,17 @@ export class McpManager {
         error_code: result.isError === true ? ErrorCode.TOOL_RUNTIME_ERROR : null,
         meta: { server_id: mapping.serverId, remote_tool: mapping.remote.name },
       }
+      await this.#observe(
+        'mcp.tool.completed',
+        {
+          server_id: mapping.serverId,
+          tool_name: mapping.remote.name,
+          ok: adapted.ok,
+          error_code: adapted.error_code ?? '',
+        },
+        this.clock.nowMs() - startedAt,
+      )
+      return adapted
     } catch (error) {
       const e = toAgentError(error, `mcp:${mapping.serverId}`)
       const failedConnection = state.connection
@@ -173,7 +196,7 @@ export class McpManager {
       // 调用已发出且不是只读时，不能自动重放；明确报告副作用未知。
       const unknown = mapping.remote.annotations?.readOnlyHint !== true
       if (!unknown) void this.#connect(state, true).catch(() => undefined)
-      return {
+      const adapted: ToolResult = {
         ok: false,
         content: unknown
           ? `MCP tool execution may have completed; status is unknown: ${e.message}`
@@ -185,6 +208,17 @@ export class McpManager {
             : ErrorCode.MCP_CONNECTION_FAILED,
         meta: { server_id: mapping.serverId, remote_tool: mapping.remote.name },
       }
+      await this.#observe(
+        'mcp.tool.completed',
+        {
+          server_id: mapping.serverId,
+          tool_name: mapping.remote.name,
+          ok: false,
+          error_code: adapted.error_code ?? '',
+        },
+        this.clock.nowMs() - startedAt,
+      )
+      return adapted
     }
   }
 
@@ -196,6 +230,11 @@ export class McpManager {
     for (const state of this.#states.values()) {
       state.connection = undefined
       if (state.config.enabled) state.status = McpConnectionStatus.DISCONNECTED
+      if (state.config.enabled)
+        await this.#observe('mcp.disconnected', {
+          server_id: state.config.name,
+          transport: state.config.transport,
+        })
     }
   }
 
@@ -219,6 +258,12 @@ export class McpManager {
         source: 'mcp.manager',
       })
     state.status = McpConnectionStatus.CONNECTING
+    const startedAt = this.clock.nowMs()
+    await this.#observe('mcp.connecting', {
+      server_id: state.config.name,
+      transport: state.config.transport,
+      reconnect: force,
+    })
     if (state.connection) await state.connection.close().catch(() => undefined)
     state.connection = undefined
     let lastError: unknown
@@ -251,15 +296,46 @@ export class McpManager {
         state.failures = 0
         state.circuitOpenUntil = null
         state.error = null
+        await this.#observe(
+          'mcp.connected',
+          {
+            server_id: state.config.name,
+            transport: state.config.transport,
+            tool_count: state.tools.length,
+            catalog_version: this.#catalogVersion,
+            attempt: attempt + 1,
+          },
+          this.clock.nowMs() - startedAt,
+        )
         return
       } catch (error) {
         await connection?.close().catch(() => undefined)
         lastError = error
+        const attemptError = toAgentError(error, `mcp:${state.config.name}`)
+        await this.#observe('mcp.connect.failed', {
+          server_id: state.config.name,
+          transport: state.config.transport,
+          attempt: attempt + 1,
+          error_code: attemptError.code,
+          message: attemptError.message,
+        })
       }
     }
     const e = toAgentError(lastError, `mcp:${state.config.name}`)
     this.#recordFailure(state, e.message)
     state.status = McpConnectionStatus.DEGRADED
+    await this.#observe(
+      state.circuitOpenUntil === null ? 'mcp.degraded' : 'mcp.circuit.opened',
+      {
+        server_id: state.config.name,
+        transport: state.config.transport,
+        failures: state.failures,
+        error_code: e.code,
+        message: e.message,
+        circuit_open_until: state.circuitOpenUntil ?? 0,
+      },
+      this.clock.nowMs() - startedAt,
+    )
     throw new AgentError({
       code: ErrorCode.MCP_CONNECTION_FAILED,
       message: e.message,
@@ -303,6 +379,11 @@ export class McpManager {
     }
     state.tools = [...tools]
     this.#catalogVersion += 1
+    void this.#observe('mcp.catalog.changed', {
+      server_id: state.config.name,
+      tool_count: state.tools.length,
+      catalog_version: this.#catalogVersion,
+    })
   }
 
   #recordFailure(state: ConnectionState, message: string): void {
@@ -313,5 +394,16 @@ export class McpManager {
       state.status = McpConnectionStatus.CIRCUIT_OPEN
       state.circuitOpenUntil = this.clock.nowMs() + state.config.circuitCooldownMs
     } else state.status = McpConnectionStatus.DEGRADED
+  }
+
+  #observe(
+    type: string,
+    data: Readonly<Record<string, unknown>>,
+    elapsedMs?: number,
+  ): Promise<void> {
+    void this.options.observationSink
+      ?.record({ type, data, ...(elapsedMs === undefined ? {} : { elapsedMs }) })
+      .catch(() => undefined)
+    return Promise.resolve()
   }
 }

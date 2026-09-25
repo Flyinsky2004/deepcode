@@ -183,6 +183,25 @@ describe('CommandHostAdapter：密钥可用性只看"可不可用"', () => {
     }
   })
 
+  it('value 来源只暴露可用性，命令视图和 raw 都不含明文', async () => {
+    const inlineSecret = 'direct-config-secret-without-known-prefix'
+    const { host } = await harness(
+      config({
+        providers: [
+          {
+            ...provider({ apiKeyRef: { source: 'value', key: inlineSecret } }),
+            enabled: true,
+          },
+        ],
+      }),
+    )
+
+    const view = await host.readConfig()
+    expect(view.providers[0]?.hasSecret).toBe(true)
+    expect(JSON.stringify(view)).not.toContain(inlineSecret)
+    expect(view.raw).toEqual({ schema_version: 1 })
+  })
+
   it('file 来源：文件存在且非空为 true，读不到就为 false（不抛错）', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'deepcode-secret-'))
     const good = join(dir, 'key.txt')
@@ -243,11 +262,62 @@ describe('CommandHostAdapter：密钥可用性只看"可不可用"', () => {
 })
 
 describe('CommandHostAdapter：配置视图与回写', () => {
+  it('原子写入 provider、模型和缺省 implementation 档位，密钥仅使用环境变量引用', async () => {
+    const { app, host } = await harness(
+      config({ providers: [], model_profiles: [], tier_assignments: [] }),
+    )
+
+    const added = await host.addProviderConfiguration({
+      name: 'Anthropic Test',
+      baseUrl: 'https://api.example.test/',
+      modelIds: ['model-a', 'model-b'],
+      contextWindow: 128_000,
+      maxOutputTokens: 8192,
+    })
+    const doc = await app.configStore.read()
+
+    expect(added.envName).toBe('DEEPCODE_ANTHROPIC_TEST_API_KEY')
+    expect(added.assignedImplementation).toBe(true)
+    expect(doc.providers).toHaveLength(1)
+    expect(doc.providers[0]).toMatchObject({
+      id: added.providerId,
+      name: 'Anthropic Test',
+      baseUrl: 'https://api.example.test',
+      apiKeyRef: { source: 'env', key: 'DEEPCODE_ANTHROPIC_TEST_API_KEY' },
+    })
+    expect(doc.model_profiles.map((model) => model.id)).toEqual(['model-a', 'model-b'])
+    expect(doc.tier_assignments).toMatchObject([
+      {
+        tier: ModelTier.IMPLEMENTATION,
+        modelRef: { providerId: added.providerId, modelId: 'model-a' },
+      },
+    ])
+    expect(JSON.stringify(doc)).not.toContain('<API_KEY>')
+  })
+
+  it('已有 implementation 档位时新增 provider 不覆盖用户选择', async () => {
+    const { app, host } = await harness()
+    const added = await host.addProviderConfiguration({
+      name: 'Second',
+      baseUrl: 'https://second.example.test',
+      modelIds: ['m2'],
+      contextWindow: 32_000,
+      maxOutputTokens: 4096,
+    })
+
+    expect(added.assignedImplementation).toBe(false)
+    expect((await app.configStore.read()).tier_assignments[0]?.modelRef).toEqual({
+      providerId: 'p',
+      modelId: 'm1',
+    })
+  })
+
   it('readConfig 把 provider/model/tier 摊平成命令层需要的窄视图', async () => {
     const { host } = await harness()
     const view = await host.readConfig()
 
     expect(view.providers.map((p) => p.id)).toEqual(['p'])
+    expect(view.providers[0]?.baseUrl).toBe('https://api.anthropic.com')
     expect(view.models[0]).toMatchObject({
       id: 'm1',
       providerId: 'p',

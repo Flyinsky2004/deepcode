@@ -53,6 +53,13 @@ export interface CommandPositional {
 export interface CommandParameters {
   readonly positionals: readonly CommandPositional[]
   /**
+   * 拒绝声明之外的位置参数。
+   *
+   * 默认保持兼容：历史命令可能自行解释原文。涉及凭据配置的命令应打开它，
+   * 这样误把明文 secret 追加到命令末尾时，会在审计之前被拒绝。
+   */
+  readonly rejectExtraPositionals?: boolean
+  /**
    * 从第 n 个位置参数起的**全部剩余原文**合并为 `rest`。
    *
    * 保留原始空白、不做 shell 解析（`parts/09` §6.1 第 4 条：指令部分
@@ -154,6 +161,23 @@ export interface CommandDefinition {
   execute(ctx: CommandContext): Promise<CommandResult>
 }
 
+/** `/api add` 的非敏感配置输入；刻意不包含明文 key。 */
+export interface ProviderConfigurationInput {
+  readonly name: string
+  readonly baseUrl: string
+  readonly modelIds: readonly string[]
+  readonly contextWindow: number
+  readonly maxOutputTokens: number
+}
+
+/** provider bundle 原子写入后的安全回执。 */
+export interface ProviderConfigurationResult {
+  readonly providerId: string
+  readonly envName: string
+  readonly modelIds: readonly string[]
+  readonly assignedImplementation: boolean
+}
+
 /**
  * 命令层需要的能力。
  *
@@ -210,6 +234,14 @@ export interface CommandHost {
   assignTierModel(tier: ModelTier, providerId: string, modelId: string): Promise<void>
   /** 改某个档位所用模型的上下文窗口（`/1M`）。能力校验由命令层做。 */
   setModelContextWindow(tier: ModelTier, contextWindow: number): Promise<void>
+
+  /**
+   * 新增 Anthropic-compatible provider 及其模型。
+   *
+   * 输入中刻意没有 API key：实现只生成环境变量形式的 SecretRef，明文凭据
+   * 永远不经过 slash command、事件或前端响应。
+   */
+  addProviderConfiguration?(input: ProviderConfigurationInput): Promise<ProviderConfigurationResult>
 
   /** 刷新并读取 skill catalog；未提供时命令保持 Phase-6 的诚实降级。 */
   listSkills?(): Promise<{
@@ -287,6 +319,7 @@ export interface CommandConfigView {
   readonly providers: readonly {
     readonly id: string
     readonly name: string
+    readonly baseUrl?: string
     readonly enabled: boolean
     readonly hasSecret: boolean
   }[]
@@ -325,7 +358,7 @@ export interface CommandConfigView {
    * "每个客户端自己写一遍"。配置视图要么完整可用，要么别暴露 `updateConfig`。
    */
   readonly settings: Readonly<Record<string, string>>
-  /** 待写回的原始文档。命令不解读它，只用于回写。 */
+  /** 仅含非敏感元信息的兼容字段；不得包含 provider secret 或自由结构配置。 */
   readonly raw: Readonly<Record<string, unknown>>
 }
 

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_BUDGET } from '../../src/core/budget.js'
 import { InMemoryEventSink } from '../../src/core/events.js'
+import { InMemoryObservationSink } from '../../src/core/observability.js'
 import type { SessionId, TurnId } from '../../src/core/ids.js'
 import { ModelEventType, type ModelProvider, type ModelRequest } from '../../src/core/provider.js'
 import { PermissionMode, type ToolContext } from '../../src/core/tool.js'
@@ -117,6 +118,7 @@ describe('Phase 9：Sub-agent', () => {
       },
       probe: () => Promise.resolve({ ok: true }),
     }
+    const observations = new InMemoryObservationSink()
     const manager = new SubAgentManager({
       definitions,
       tools,
@@ -124,6 +126,7 @@ describe('Phase 9：Sub-agent', () => {
       router: new ModelRouter(config),
       providerFactory: () => provider,
       eventSink: new InMemoryEventSink(),
+      observationSink: observations,
       workspaceRoot: root,
       principalId: 'principal',
     })
@@ -174,6 +177,23 @@ describe('Phase 9：Sub-agent', () => {
       (turn) => turn.sessionId === launched.sessionId,
     )
     expect(childTurn?.turnId).toMatch(/^subagent_turn_/u)
+    expect(observations.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'subagent.queued',
+          sessionId: parent.id,
+          subagentSessionId: launched.sessionId,
+        }),
+        expect.objectContaining({
+          type: 'subagent.started',
+          subagentSessionId: launched.sessionId,
+        }),
+        expect.objectContaining({
+          type: 'subagent.completed',
+          subagentSessionId: launched.sessionId,
+        }),
+      ]),
+    )
 
     const subAgentTool = createSubAgentTool(manager)
     const ownStatus = await subAgentTool.execute(parentContext, {

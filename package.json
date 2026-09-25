@@ -30,17 +30,20 @@
     "css:check": "node scripts/check-css.mjs",
     "copy-static": "node scripts/copy-static.mjs",
     "test": "vitest run",
+    "test:quality": "vitest run tests/observability tests/commands/api.test.ts tests/acceptance/phase6.test.ts tests/acceptance/phase11.test.ts tests/providers/anthropic.test.ts tests/tools/executor.test.ts tests/mcp/phase10.test.ts tests/subagents/phase9.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm css:check && pnpm test"
+    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm css:check && pnpm test",
+    "quality": "pnpm check && pnpm test:coverage"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.1.0",
     "ink": "^7.1.1",
+    "marked": "^18.0.14",
     "react": "^19.3.0",
     "ws": "^8.21.3",
     "zod": "^4.6.4"

@@ -21,6 +21,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { ErrorCode } from '../../src/core/errors.js'
+import { InMemoryObservationSink } from '../../src/core/observability.js'
 import type { AskUserQuestion, UserInputService } from '../../src/core/input.js'
 import type { SessionId, ToolCallId, TurnId } from '../../src/core/ids.js'
 import {
@@ -108,7 +109,12 @@ async function harness(
     timeoutMs?: number
     clock?: ReturnType<typeof createFakeClock>
   } = {},
-): Promise<{ executor: ToolExecutor; store: ChatStore | undefined; events: string[] }> {
+): Promise<{
+  executor: ToolExecutor
+  store: ChatStore | undefined
+  events: string[]
+  observations: InMemoryObservationSink
+}> {
   const registry = new ToolRegistry()
   for (const tool of tools) registry.register(tool)
   let store: ChatStore | undefined
@@ -117,6 +123,7 @@ async function harness(
     store = new ChatStore(resolveAppPaths({ home: dir, cwd: dir }), options.clock)
   }
   const events: string[] = []
+  const observations = new InMemoryObservationSink(options.clock)
   const executor = new ToolExecutor({
     registry,
     permissionEngine: options.permissionEngine ?? allow,
@@ -133,8 +140,9 @@ async function harness(
     onEvent: (type) => {
       events.push(type)
     },
+    observationSink: observations,
   })
-  return { executor, store, events }
+  return { executor, store, events, observations }
 }
 
 const options = (overrides: Partial<ExecuteToolOptions> = {}): ExecuteToolOptions => ({
@@ -329,7 +337,7 @@ describe('ToolExecutor 权限决策', () => {
       },
     }
     const tool = fakeTool()
-    const { executor, store } = await harness([tool], {
+    const { executor, store, observations } = await harness([tool], {
       permissionEngine: engine(PermissionAction.ASK),
       approvalService,
     })
@@ -338,6 +346,20 @@ describe('ToolExecutor 权限决策', () => {
     await expect(store!.listPermissionRequests()).resolves.toMatchObject([
       { status: PermissionRequestStatus.APPROVED, resolved_by: 'user' },
     ])
+    expect(observations.records.map((record) => record.type)).toEqual([
+      'permission.decided',
+      'permission.requested',
+      'permission.resolved',
+    ])
+    expect(observations.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'permission.decided',
+          policyId: 'test.policy',
+          toolCallId: 'tc1',
+        }),
+      ]),
+    )
   })
 
   it('审批被拒时返回拒绝理由并记录失败', async () => {

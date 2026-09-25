@@ -58,6 +58,14 @@ export class ModelRouter {
     this.config = typeof config === 'function' ? config : () => config
   }
 
+  /**
+   * 恢复 turn 时只从当前配置补取凭据；route snapshot 本身不持久化 SecretRef。
+   * endpoint 与模型能力仍使用 turn 起点快照，避免配置变化改写历史。
+   */
+  async providerById(providerId: string): Promise<Provider | undefined> {
+    return (await this.config()).providers.find((provider) => provider.id === providerId)
+  }
+
   async resolve(intent: TaskIntent, override?: ModelOverride): Promise<ResolvedModelRoute> {
     const cfg = await this.config()
     const assignment = cfg.tier_assignments.find((a) => a.tier === intent.tier && a.enabled)

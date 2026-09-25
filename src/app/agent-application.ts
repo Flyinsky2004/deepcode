@@ -19,12 +19,15 @@
  * 与**消费事件**——不得直接改会话、权限或工具状态。
  */
 
+import { randomUUID } from 'node:crypto'
+
 import { AgentError, ErrorCode, toAgentError } from '../core/errors.js'
 import type { EventSink } from '../core/events.js'
+import type { ObservationSink } from '../core/observability.js'
 import type { PrincipalId, SessionId, TurnId } from '../core/ids.js'
 import type { PermissionMode, ApprovalService } from '../core/tool.js'
 import type { UserInputService } from '../core/input.js'
-import type { ModelOverride, ModelProfile, ModelTier } from '../core/provider.js'
+import { ModelTier, type ModelOverride, type ModelProfile } from '../core/provider.js'
 import { ACTIVE_PHASES, type TurnResult } from '../core/turn.js'
 import { systemClock, type Clock } from '../core/time.js'
 import type { AgentBudget } from '../core/budget.js'
@@ -33,7 +36,7 @@ import { ChatStore } from '../storage/chat-store.js'
 import { ConfigStore } from '../storage/config-store.js'
 import { EventLog } from '../storage/event-log.js'
 import { resolveAppPaths, type AppPaths } from '../storage/paths.js'
-import type { RecoverySnapshot, TierAssignment } from '../storage/types.js'
+import type { RecoverySnapshot, StoredProvider, TierAssignment } from '../storage/types.js'
 
 import { ModelRouter, type ResolvedModelRoute } from '../providers/router.js'
 import { AnthropicMessagesProvider } from '../providers/anthropic.js'
@@ -71,6 +74,7 @@ import {
   type McpConnectionFactory,
   type McpServerConfig,
 } from '../mcp/index.js'
+import { LocalObservationLog } from '../observability/index.js'
 
 export interface AgentApplicationOptions {
   readonly paths?: AppPaths
@@ -85,6 +89,7 @@ export interface AgentApplicationOptions {
   readonly configStore?: ConfigStore
   readonly chatStore?: ChatStore
   readonly eventLog?: EventLog
+  readonly observationSink?: ObservationSink
   readonly registry?: ToolRegistry
   readonly approvalService?: ApprovalService
   readonly userInputService?: UserInputService
@@ -108,6 +113,8 @@ export class AgentApplication {
   readonly configStore: ConfigStore
   readonly chatStore: ChatStore
   readonly eventLog: EventLog
+  readonly observationSink: ObservationSink
+  readonly observationLog: LocalObservationLog | undefined
   readonly bus: EventBus
   readonly registry: ToolRegistry
   readonly executor: ToolExecutor
@@ -154,6 +161,8 @@ export class AgentApplication {
     configStore: ConfigStore
     chatStore: ChatStore
     eventLog: EventLog
+    observationSink: ObservationSink
+    observationLog?: LocalObservationLog
     bus: EventBus
     registry: ToolRegistry
     executor: ToolExecutor
@@ -179,6 +188,8 @@ export class AgentApplication {
     this.configStore = options.configStore
     this.chatStore = options.chatStore
     this.eventLog = options.eventLog
+    this.observationSink = options.observationSink
+    this.observationLog = options.observationLog
     this.bus = options.bus
     this.registry = options.registry
     this.executor = options.executor
@@ -222,6 +233,11 @@ export class AgentApplication {
 
     const eventLog = options.eventLog ?? new EventLog(`${paths.project_dir}/events`, clock)
     const bus = new EventBus({ log: eventLog, policy, clock })
+    const observationSink =
+      options.observationSink ??
+      new LocalObservationLog(`${paths.project_dir}/observability.ndjson`, clock)
+    const observationLog =
+      observationSink instanceof LocalObservationLog ? observationSink : undefined
 
     // principal 要在 broker 之前确定：broker 的授权回调需要它来判断
     // "谁能解决这个会话的审批"。
@@ -276,6 +292,7 @@ export class AgentApplication {
       timeoutMs: policy.toolTimeoutMs,
       userInputTimeoutMs: policy.userInputTimeoutMs,
       outputLimitChars: policy.toolOutputLimitChars,
+      observationSink,
     })
 
     const contextBuilder = new ContextBuilder({
@@ -302,6 +319,7 @@ export class AgentApplication {
       router,
       providerFactory,
       eventSink: bus,
+      observationSink,
       workspaceRoot,
       principalId,
       skillRegistry,
@@ -318,6 +336,7 @@ export class AgentApplication {
       configs: mcpConfigs,
       registry,
       clock,
+      observationSink,
       ...(options.mcpFactoryFor === undefined ? {} : { factoryFor: options.mcpFactoryFor }),
     })
     await mcpManager.initialize()
@@ -330,6 +349,8 @@ export class AgentApplication {
       configStore,
       chatStore,
       eventLog,
+      observationSink,
+      ...(observationLog === undefined ? {} : { observationLog }),
       bus,
       registry,
       executor,
@@ -723,6 +744,84 @@ export class AgentApplication {
   }
 
   /**
+   * 安全新增 provider：只创建环境变量 SecretRef，不接收或保存明文 key。
+   * 第一个模型在 implementation 尚未配置时自动成为主模型。
+   */
+  async addProviderConfiguration(input: {
+    readonly name: string
+    readonly baseUrl: string
+    readonly modelIds: readonly string[]
+    readonly contextWindow: number
+    readonly maxOutputTokens: number
+  }): Promise<{
+    readonly providerId: string
+    readonly envName: string
+    readonly modelIds: readonly string[]
+    readonly assignedImplementation: boolean
+  }> {
+    const providerId = `provider_${randomUUID()}`
+    const existing = await this.configStore.read()
+    const envStem = input.name
+      .normalize('NFKD')
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .toUpperCase()
+    const baseEnvName = `DEEPCODE_${envStem || 'PROVIDER'}_API_KEY`
+    const usedEnvNames = new Set(
+      existing.providers.flatMap((provider) =>
+        provider.apiKeyRef.source === 'env' ? [provider.apiKeyRef.key] : [],
+      ),
+    )
+    const envName = usedEnvNames.has(baseEnvName)
+      ? `${baseEnvName}_${providerId.slice(-8).toUpperCase()}`
+      : baseEnvName
+    const now = this.now()
+    const provider: StoredProvider = {
+      id: providerId,
+      name: input.name.trim(),
+      baseUrl: input.baseUrl.replace(/\/+$/, ''),
+      apiKeyRef: { source: 'env', key: envName },
+      createdAt: now,
+      updatedAt: now,
+      enabled: true,
+    }
+    const modelIds = input.modelIds.map((modelId) => modelId.trim())
+    const profiles: ModelProfile[] = modelIds.map((modelId) => ({
+      id: modelId,
+      providerId,
+      displayName: modelId,
+      contextWindow: input.contextWindow,
+      maxOutputTokens: input.maxOutputTokens,
+      // Agent 主循环依赖工具调用，因此安全入口默认声明 tools；其余能力保持
+      // 保守关闭，用户确认 endpoint 支持后可在 config.json 中显式开启。
+      supportsThinking: false,
+      supportsTools: true,
+      supportsVision: false,
+      supports1MContext: false,
+      enabled: true,
+    }))
+    const firstModel = modelIds[0]
+    if (firstModel === undefined)
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'provider requires at least one model',
+        source: 'app',
+      })
+    const { assignmentAdded } = await this.configStore.addProviderBundle(provider, profiles, {
+      tier: ModelTier.IMPLEMENTATION,
+      modelRef: { providerId, modelId: firstModel },
+      enabled: true,
+      fallbackModelRefs: [],
+    })
+    return {
+      providerId,
+      envName,
+      modelIds,
+      assignedImplementation: assignmentAdded,
+    }
+  }
+
+  /**
    * 「档位 → 它当前指向的 `ModelProfile` → 改它」，三个 setter 共用。
    *
    * ⚠️ **找不到目标就抛错，不静默返回。**
@@ -777,6 +876,7 @@ export class AgentApplication {
   /** 等待全部待处理的事件写入完成。优雅关闭时调用。 */
   async flush(): Promise<void> {
     await this.bus.flush()
+    await this.observationSink.flush?.()
   }
 
   /**
@@ -823,6 +923,7 @@ export class AgentApplication {
       contextBuilder: this.contextBuilder,
       toolExecutor: this.executor,
       eventSink: this.bus,
+      observationSink: this.observationSink,
       router: this.router,
       providerFactory: this.#providerFactory,
       compactor: this.compactor,

@@ -34,6 +34,7 @@ import {
 
 /** 假密钥。形状与真实 key 一致，但显然是测试值。 */
 const FAKE_SECRET = 'sk-ant-FAKE0123456789abcdefghijklmnop'
+const INLINE_SECRET = 'direct-config-secret-without-known-prefix'
 
 /** 一份**到处都藏着**假密钥的配置文档。 */
 function pollutedConfig(): ConfigDocument {
@@ -53,7 +54,7 @@ function pollutedConfig(): ConfigDocument {
         id: 'p',
         name: 'anthropic',
         baseUrl: 'https://api.anthropic.com',
-        apiKeyRef: { source: 'env', key: 'ANTHROPIC_API_KEY' },
+        apiKeyRef: { source: 'value', key: INLINE_SECRET },
         createdAt: '',
         updatedAt: '',
         enabled: true,
@@ -88,6 +89,7 @@ describe('配置 DTO：白名单 + 脱敏', () => {
   it('⚠️ 输出 JSON 里不含假密钥', () => {
     const dto = toConfigDto(pollutedConfig())
     expect(renderJson(dto)).not.toContain(FAKE_SECRET)
+    expect(renderJson(dto)).not.toContain(INLINE_SECRET)
     // 连 key 名都不该出现——说明 `llm_channels` 这类自由结构根本没参与构造
     expect(renderJson(dto)).not.toContain('api_key')
   })
@@ -110,6 +112,12 @@ describe('配置 DTO：白名单 + 脱敏', () => {
 })
 
 describe('redactKeys / redactSecrets', () => {
+  it('source=value 的 key 即使没有已知前缀也会脱敏', () => {
+    const input = { credentialRef: { source: 'value', key: INLINE_SECRET } }
+    expect(JSON.stringify(redactKeys(input))).not.toContain(INLINE_SECRET)
+    expect(JSON.stringify(redactSecrets(input))).not.toContain(INLINE_SECRET)
+  })
+
   it('按键名脱敏，且大小写与连字符变体都命中', () => {
     expect(isSensitiveKey('apiKey')).toBe(true)
     expect(isSensitiveKey('API_KEY')).toBe(true)

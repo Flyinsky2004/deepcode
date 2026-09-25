@@ -23,3 +23,4 @@ coverage/
 
 # oh-my-claudecode 会话状态（工具状态，非项目内容）
 .omc/
+.deepcode/

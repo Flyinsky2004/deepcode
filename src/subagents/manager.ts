@@ -6,6 +6,7 @@ import { allocateChildBudget, type AgentBudget, type BudgetConsumption } from '.
 import { EMPTY_WORKING_MEMORY, type SystemPrompt, type WorkingMemory } from '../core/context.js'
 import { AgentError, ErrorCode, toAgentError } from '../core/errors.js'
 import type { EventSink } from '../core/events.js'
+import type { ObservationSink } from '../core/observability.js'
 import { createModelOverrideId, type SessionId, type TurnId } from '../core/ids.js'
 import { MessageRole } from '../core/models.js'
 import {
@@ -56,6 +57,7 @@ export interface SubAgentManagerOptions {
   readonly router?: ModelRouter
   readonly providerFactory?: (route: ResolvedModelRoute) => ModelProvider
   readonly eventSink: EventSink
+  readonly observationSink?: ObservationSink
   readonly workspaceRoot: string
   readonly principalId: string
   readonly skillRegistry?: SkillRegistry
@@ -305,6 +307,18 @@ export class SubAgentManager {
       depth: parentDepth + 1,
     }
     await this.options.chatStore.addSubAgentSession(session)
+    await this.#observe({
+      type: 'subagent.queued',
+      sessionId: parent.sessionId,
+      turnId: parent.turnId,
+      subagentSessionId: conversation.id,
+      data: {
+        agent_type: definition.type,
+        run_mode: runMode,
+        visibility,
+        depth: session.depth,
+      },
+    })
     const controller = new AbortController()
     if (!session.detached)
       parent.signal.addEventListener('abort', () => controller.abort(), { once: true })
@@ -375,6 +389,13 @@ export class SubAgentManager {
         })
     }
     const controller = new AbortController()
+    await this.#observe({
+      type: 'subagent.resume.requested',
+      sessionId: session.parentSessionId as SessionId,
+      turnId: session.parentTurnId as TurnId,
+      subagentSessionId: session.sessionId as SessionId,
+      data: { agent_type: session.agentType },
+    })
     this.#controllers.set(sessionId, controller)
     const task = this.#run(
       { ...session, budget: remainingBudget(session) },
@@ -423,6 +444,7 @@ export class SubAgentManager {
     resume = false,
   ): Promise<SubAgentResult> {
     let acquired = false
+    const startedAt = this.clock.nowMs()
     try {
       await this.#acquire(signal)
       acquired = true
@@ -435,6 +457,17 @@ export class SubAgentManager {
       await this.options.chatStore.updateSubAgentSession(session.sessionId, {
         status: SubAgentSessionStatus.RUNNING,
         updatedAt: this.clock.now(),
+      })
+      await this.#observe({
+        type: 'subagent.started',
+        sessionId: session.parentSessionId as SessionId,
+        turnId: session.parentTurnId as TurnId,
+        subagentSessionId: session.sessionId as SessionId,
+        data: {
+          agent_type: session.agentType,
+          resume,
+          depth: session.depth,
+        },
       })
       const runtime = this.#runtime(session)
       let turn: TurnResult
@@ -468,7 +501,16 @@ export class SubAgentManager {
           this.#override(session),
         )
       }
-      return await this.#complete(session, turn)
+      const result = await this.#complete(session, turn)
+      await this.#observe({
+        type: 'subagent.completed',
+        sessionId: session.parentSessionId as SessionId,
+        turnId: session.parentTurnId as TurnId,
+        subagentSessionId: session.sessionId as SessionId,
+        elapsedMs: this.clock.nowMs() - startedAt,
+        data: { agent_type: session.agentType, status: result.status },
+      })
+      return result
     } catch (error) {
       const e = toAgentError(error, 'subagents.manager')
       const status = signal.aborted ? 'cancelled' : 'failed'
@@ -488,6 +530,19 @@ export class SubAgentManager {
         result,
         updatedAt: this.clock.now(),
         completedAt: this.clock.now(),
+      })
+      await this.#observe({
+        type: 'subagent.completed',
+        sessionId: session.parentSessionId as SessionId,
+        turnId: session.parentTurnId as TurnId,
+        subagentSessionId: session.sessionId as SessionId,
+        elapsedMs: this.clock.nowMs() - startedAt,
+        data: {
+          agent_type: session.agentType,
+          status,
+          error_code: e.code,
+          message: e.message,
+        },
       })
       return result
     } finally {
@@ -556,12 +611,18 @@ export class SubAgentManager {
       ...(this.options.toolOutputLimitChars === undefined
         ? {}
         : { outputLimitChars: this.options.toolOutputLimitChars }),
+      ...(this.options.observationSink === undefined
+        ? {}
+        : { observationSink: this.options.observationSink }),
     })
     return new AgentRuntime({
       chatStore: this.options.chatStore,
       contextBuilder,
       toolExecutor: executor,
       eventSink: this.options.eventSink,
+      ...(this.options.observationSink === undefined
+        ? {}
+        : { observationSink: this.options.observationSink }),
       workspaceRoot: session.workingDirectory,
       principalId: session.principalId,
       budget: session.budget,
@@ -726,6 +787,11 @@ export class SubAgentManager {
           ? [...parentMemory.appliedSkills]
           : [],
     }
+  }
+
+  #observe(input: Parameters<ObservationSink['record']>[0]): Promise<void> {
+    void this.options.observationSink?.record(input).catch(() => undefined)
+    return Promise.resolve()
   }
 
   async #workingDirectory(definition: SubAgentDefinition, sessionId: string): Promise<string> {

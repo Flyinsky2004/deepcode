@@ -16,6 +16,7 @@ import {
 import { MessageRole, MessageSubtype } from '../core/models.js'
 import {
   type ModelProvider,
+  type Provider,
   type ModelRequest,
   type ModelOverride,
   type TaskIntent,
@@ -40,6 +41,7 @@ import {
   type SkillGuardRef,
 } from '../core/tool.js'
 import type { EventSink, RuntimeEventEnvelope } from '../core/events.js'
+import type { ObservationSink } from '../core/observability.js'
 import { systemClock, type Clock } from '../core/time.js'
 import type { ChatStore } from '../storage/chat-store.js'
 import { argsPreview } from '../storage/audit.js'
@@ -75,6 +77,17 @@ function skillGuardAuditMeta(result: ToolResult): Readonly<Record<string, unknow
   )
 }
 
+/** SecretRef 属于运行凭据，不是可恢复历史；route snapshot 只保存非敏感元信息。 */
+function providerSnapshot(provider: Provider): Omit<Provider, 'apiKeyRef'> {
+  return {
+    id: provider.id,
+    name: provider.name,
+    baseUrl: provider.baseUrl,
+    createdAt: provider.createdAt,
+    updatedAt: provider.updatedAt,
+  }
+}
+
 export interface AgentRuntimeOptions {
   readonly chatStore: ChatStore
   readonly contextBuilder: ContextBuilder
@@ -89,6 +102,8 @@ export interface AgentRuntimeOptions {
    * 不需要事件的调用方请显式传 `NullEventSink`，把意图写出来。
    */
   readonly eventSink: EventSink
+  /** 本地结构化观测出口；不得影响 turn 主链路。 */
+  readonly observationSink?: ObservationSink
   readonly provider?: ModelProvider
   readonly model?: string
   readonly router?: ModelRouter
@@ -483,6 +498,26 @@ export class AgentRuntime {
         // 区分"用户取消"与"执行失败"——例如决定是否重发排队中的 prompt。
         ...(status === TurnStatus.CANCELLED ? { cancelled: true } : {}),
       })
+      const consumption = tracker.snapshot()
+      await this.observe({
+        type: 'turn.completed',
+        sessionId,
+        turnId,
+        elapsedMs: consumption.wallTimeMs,
+        data: {
+          status,
+          terminal_reason: reason ?? '',
+          error: error ?? '',
+          last_tool_error: lastToolError ?? '',
+          input_tokens: result.input_tokens,
+          cumulative_input_tokens: tracker.cumulativeInputTokens,
+          output_tokens: result.output_tokens,
+          cost: consumption.cost,
+          model_calls: consumption.modelCalls,
+          tool_calls: consumption.toolCalls,
+          wall_time_ms: consumption.wallTimeMs,
+        },
+      })
       return result
     }
     try {
@@ -505,8 +540,21 @@ export class AgentRuntime {
         requiresThinking: false,
       }
       if (persisted?.routeSnapshot) {
+        const persistedProvider = persisted.routeSnapshot.provider
+        const currentProvider = await this.options.router?.providerById(persistedProvider.id)
+        // 新快照不含 SecretRef，从当前全局配置补取；旧快照仍可在没有 router 的
+        // 测试/迁移场景下读取。找不到时给空 env 引用，让默认 provider 明确报
+        // PROVIDER_AUTH_FAILED，而不是把凭据伪造成可用。
+        const snapshotProvider: Provider = {
+          ...persistedProvider,
+          apiKeyRef:
+            currentProvider?.apiKeyRef ??
+            ('apiKeyRef' in persistedProvider
+              ? persistedProvider.apiKeyRef
+              : { source: 'env', key: '' }),
+        }
         route = {
-          provider: persisted.routeSnapshot.provider,
+          provider: snapshotProvider,
           model: persisted.routeSnapshot.model,
           tier: persisted.routeSnapshot.tier,
           candidates: [
@@ -533,6 +581,22 @@ export class AgentRuntime {
           new AnthropicMessagesProvider({ provider: route.provider }))
         : this.options.provider
       model = route?.model.id ?? this.options.model
+      await this.observe({
+        type: 'model.route.selected',
+        sessionId,
+        turnId,
+        data: {
+          provider_id: route?.provider.id ?? 'injected',
+          model_id: model ?? '',
+          tier: route?.tier ?? intent.tier,
+          reason: persisted?.routeSnapshot
+            ? 'resume'
+            : override === undefined
+              ? 'tier'
+              : 'override',
+          override_id: override?.overrideId ?? '',
+        },
+      })
       if (route)
         await this.options.chatStore.updateTurn(sessionId, turnId, {
           modelSnapshot: {
@@ -547,7 +611,7 @@ export class AgentRuntime {
             supports1MContext: route.model.supports1MContext,
           },
           routeSnapshot: {
-            provider: route.provider,
+            provider: providerSnapshot(route.provider),
             model: route.model,
             tier: route.tier,
           },
@@ -748,6 +812,7 @@ export class AgentRuntime {
             await this.options.chatStore.listActiveMessages(sessionId),
           )
         ) {
+          const compactStartedAt = this.clock.nowMs()
           await this.emit(sessionId, turnId, RuntimeEventType.COMPACT_START, {
             strategy: 'preflight',
           })
@@ -761,6 +826,19 @@ export class AgentRuntime {
           await this.emit(sessionId, turnId, RuntimeEventType.COMPACT_END, {
             applied: compacted !== undefined,
             strategy: 'preflight',
+          })
+          await this.observe({
+            type: 'compact.completed',
+            sessionId,
+            turnId,
+            elapsedMs: this.clock.nowMs() - compactStartedAt,
+            data: {
+              strategy: 'preflight',
+              applied: compacted !== undefined,
+              context_tokens_before: compacted?.tokensBefore ?? 0,
+              context_tokens_after: compacted?.tokensAfter ?? 0,
+              boundary_id: compacted?.boundaryId ?? '',
+            },
           })
           await transition(TurnPhase.BUILDING_CONTEXT, 'compact complete')
           continue
@@ -798,6 +876,21 @@ export class AgentRuntime {
           input: Readonly<Record<string, unknown>>
         }> = []
         let streamUsage: { inputTokens: number; outputTokens: number } | undefined
+        const modelStartedAt = this.clock.nowMs()
+        await this.observe({
+          type: 'model.call.started',
+          sessionId,
+          turnId,
+          data: {
+            provider_id: route?.provider.id ?? 'injected',
+            model_id: model ?? '',
+            tier: route?.tier ?? intent.tier,
+            attempt: providerRetries + 1,
+            max_tokens: maxTokens,
+            tools_count: request.tools?.length ?? 0,
+            thinking_enabled: thinking !== undefined,
+          },
+        })
         try {
           const stream = provider.stream(request, runSignal)
           for await (const event of stream) {
@@ -832,14 +925,52 @@ export class AgentRuntime {
           streamUsage = stream.usage
         } catch (error) {
           const e = toAgentError(error, 'runtime')
+          await this.observe({
+            type: 'model.call.failed',
+            sessionId,
+            turnId,
+            elapsedMs: this.clock.nowMs() - modelStartedAt,
+            data: {
+              provider_id: route?.provider.id ?? 'injected',
+              model_id: model ?? '',
+              error_code: e.code,
+              message: e.message,
+              transient: isTransient(e.code),
+            },
+          })
           if (
             e.code === ErrorCode.CONTEXT_EXCEEDED &&
             this.options.compactor &&
             !compactedThisTurn
           ) {
+            const compactStartedAt = this.clock.nowMs()
+            await this.emit(sessionId, turnId, RuntimeEventType.COMPACT_START, {
+              strategy: 'reactive',
+            })
             await transition(TurnPhase.COMPACTING, 'reactive context overflow')
-            await this.options.compactor.compactReactive(sessionId, workingMemory, runSignal)
+            const compacted = await this.options.compactor.compactReactive(
+              sessionId,
+              workingMemory,
+              runSignal,
+            )
             compactedThisTurn = true
+            await this.emit(sessionId, turnId, RuntimeEventType.COMPACT_END, {
+              applied: compacted !== undefined,
+              strategy: 'reactive',
+            })
+            await this.observe({
+              type: 'compact.completed',
+              sessionId,
+              turnId,
+              elapsedMs: this.clock.nowMs() - compactStartedAt,
+              data: {
+                strategy: 'reactive',
+                applied: compacted !== undefined,
+                context_tokens_before: compacted?.tokensBefore ?? 0,
+                context_tokens_after: compacted?.tokensAfter ?? 0,
+                boundary_id: compacted?.boundaryId ?? '',
+              },
+            })
             await transition(TurnPhase.BUILDING_CONTEXT, 'reactive compact complete')
             continue
           }
@@ -859,6 +990,17 @@ export class AgentRuntime {
               : finish(TurnStatus.CANCELLED, TerminalReason.CANCELLED, null))
           if (isTransient(e.code) && providerRetries < 2) {
             providerRetries += 1
+            await this.observe({
+              type: 'model.retry',
+              sessionId,
+              turnId,
+              data: {
+                provider_id: route?.provider.id ?? 'injected',
+                model_id: model ?? '',
+                retry: providerRetries,
+                error_code: e.code,
+              },
+            })
             continue
           }
           const advanced =
@@ -879,6 +1021,19 @@ export class AgentRuntime {
               new AnthropicMessagesProvider({ provider: route.provider })
             model = route.model.id
             providerRetries = 0
+            await this.observe({
+              type: 'model.fallback',
+              sessionId,
+              turnId,
+              data: {
+                from_provider: previous.providerId,
+                from_model: previous.modelId,
+                to_provider: route.provider.id,
+                to_model: route.model.id,
+                tier: route.tier,
+                error_code: e.code,
+              },
+            })
             // parts/09 §9.5：「切换模型后必须重新构建请求并写 model_route_changed」。
             // 用户明确指定的模型因连接失败被换掉，是**用户必须能看见**的事
             // ——否则他以为 `/workwith` 的模型跑完了整件事。
@@ -910,7 +1065,7 @@ export class AgentRuntime {
                 supports1MContext: route.model.supports1MContext,
               },
               routeSnapshot: {
-                provider: route.provider,
+                provider: providerSnapshot(route.provider),
                 model: route.model,
                 tier: route.tier,
               },
@@ -930,7 +1085,27 @@ export class AgentRuntime {
               )
             : finish(TurnStatus.CANCELLED, TerminalReason.CANCELLED, null))
         const usage = typeof streamUsage !== 'undefined' ? streamUsage : undefined
+        const callCost = usage
+          ? (usage.inputTokens * (route?.model.inputCostPerMillion ?? 0) +
+              usage.outputTokens * (route?.model.outputCostPerMillion ?? 0)) /
+            1_000_000
+          : 0
         if (usage) tracker.recordUsage(usage)
+        if (callCost > 0) tracker.recordCost(callCost)
+        await this.observe({
+          type: 'model.call.completed',
+          sessionId,
+          turnId,
+          elapsedMs: this.clock.nowMs() - modelStartedAt,
+          data: {
+            provider_id: route?.provider.id ?? 'injected',
+            model_id: model ?? '',
+            input_tokens: usage?.inputTokens ?? 0,
+            output_tokens: usage?.outputTokens ?? 0,
+            cost: callCost,
+            tool_calls: toolCalls.length,
+          },
+        })
         if (blocks.length > 0)
           await this.options.chatStore.addMessage({
             conversation_id: sessionId,
@@ -962,6 +1137,14 @@ export class AgentRuntime {
               { toolCallId: call.id, toolName: call.name, input: call.input },
             ],
           }
+          const toolStartedAt = this.clock.nowMs()
+          await this.observe({
+            type: 'tool.execution.started',
+            sessionId,
+            turnId,
+            toolCallId: call.id,
+            data: { tool_name: call.name, input: call.input },
+          })
           const result = await this.options.toolExecutor.executeNamed(call.name, {
             sessionId,
             turnId,
@@ -986,6 +1169,24 @@ export class AgentRuntime {
               subagent_depth: this.options.subagentDepth ?? 0,
               budget_consumption: tracker.snapshot(),
               cumulative_input_tokens: tracker.cumulativeInputTokens,
+            },
+          })
+          await this.observe({
+            type: 'tool.execution.completed',
+            sessionId,
+            turnId,
+            toolCallId: call.id,
+            ...(typeof result.meta['policy_id'] === 'string'
+              ? { policyId: result.meta['policy_id'] }
+              : {}),
+            elapsedMs: this.clock.nowMs() - toolStartedAt,
+            data: {
+              tool_name: call.name,
+              ok: result.ok,
+              error_code: result.error_code ?? '',
+              output_length: result.content.length,
+              server_id:
+                typeof result.meta['server_id'] === 'string' ? result.meta['server_id'] : '',
             },
           })
           if (call.name === 'todo_write' && Array.isArray(result.data?.['todos'])) {
@@ -1204,5 +1405,11 @@ export class AgentRuntime {
       data,
     } as RuntimeEventEnvelope
     await this.options.eventSink.append(event)
+  }
+
+  /** 观测失败不能把业务 turn 判成失败；本地事件日志仍是 UI/恢复的权威。 */
+  private observe(input: Parameters<ObservationSink['record']>[0]): Promise<void> {
+    void this.options.observationSink?.record(input).catch(() => undefined)
+    return Promise.resolve()
   }
 }

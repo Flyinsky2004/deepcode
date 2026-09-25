@@ -32,6 +32,7 @@ import {
 import { type ChatStore } from '../storage/chat-store.js'
 import { type PersistedToolExecution } from '../storage/types.js'
 import { systemClock, type Clock } from '../core/time.js'
+import type { ObservationSink } from '../core/observability.js'
 import type { ToolRegistry } from './registry.js'
 import { inputHash as canonicalInputHash, argsPreview } from '../storage/audit.js'
 import { guardsFromTurnState } from '../skills/guards.js'
@@ -52,6 +53,7 @@ export interface ToolExecutorOptions {
   readonly timeoutMs?: number
   readonly outputLimitChars?: number
   readonly onEvent?: (type: string, data: Readonly<Record<string, unknown>>) => Promise<void> | void
+  readonly observationSink?: ObservationSink
 }
 
 export interface ExecuteToolOptions {
@@ -82,6 +84,7 @@ export class ToolExecutor {
   readonly userInputService: UserInputService | undefined
   readonly userInputTimeoutMs: number
   readonly onEvent?: ToolExecutorOptions['onEvent']
+  readonly observationSink: ObservationSink | undefined
   constructor(options: ToolExecutorOptions) {
     this.registry = options.registry
     this.permissionEngine = options.permissionEngine
@@ -93,6 +96,7 @@ export class ToolExecutor {
     this.userInputTimeoutMs = options.userInputTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
     this.outputLimitChars = options.outputLimitChars ?? 64_000
     this.onEvent = options.onEvent
+    this.observationSink = options.observationSink
   }
 
   async execute(options: ExecuteToolOptions): Promise<ToolResult> {
@@ -205,6 +209,20 @@ export class ToolExecutor {
       mode: options.mode ?? PermissionMode.NORMAL,
       skillGuards,
     })
+    await this.observe({
+      type: 'permission.decided',
+      sessionId: options.sessionId,
+      turnId: options.turnId,
+      toolCallId: options.toolCallId,
+      policyId: decision.policyId,
+      data: {
+        tool_name: toolName,
+        action: decision.action,
+        risk_level: decision.risk,
+        mode: options.mode ?? PermissionMode.NORMAL,
+        input,
+      },
+    })
     const matchedSkillGuard = skillGuards.find((guard) => guard.guardId === decision.policyId)
     const skillGuardMeta =
       matchedSkillGuard === undefined
@@ -275,6 +293,19 @@ export class ToolExecutor {
         await this.chatStore?.updateToolExecution(execution.executionId, {
           permissionRequestIds: [request.request_id],
         })
+        await this.observe({
+          type: 'permission.requested',
+          sessionId: options.sessionId,
+          turnId: options.turnId,
+          toolCallId: options.toolCallId,
+          policyId: decision.policyId,
+          data: {
+            request_id: request.request_id,
+            tool_name: toolName,
+            risk_level: decision.risk,
+            expires_at: request.expires_at,
+          },
+        })
       }
       if (!prior)
         await this.onEvent?.('permission.request', {
@@ -321,6 +352,19 @@ export class ToolExecutor {
           timeout.cleanup()
         }
       }
+      await this.observe({
+        type: 'permission.resolved',
+        sessionId: options.sessionId,
+        turnId: options.turnId,
+        toolCallId: options.toolCallId,
+        policyId: decision.policyId,
+        data: {
+          request_id: request.request_id,
+          tool_name: toolName,
+          decision: resolution.decision,
+          resolved_by: resolution.resolvedBy,
+        },
+      })
       if (resolution.decision !== PermissionAction.ALLOW) {
         await this.chatStore?.resolvePermission(request.request_id, resolution)
         await this.chatStore?.updateToolExecution(execution.executionId, {
@@ -550,5 +594,10 @@ export class ToolExecutor {
     return typeof input === 'object' && input !== null && '__toolName' in input
       ? String((input as Record<string, unknown>)['__toolName'])
       : ''
+  }
+
+  private observe(input: Parameters<ObservationSink['record']>[0]): Promise<void> {
+    void this.observationSink?.record(input).catch(() => undefined)
+    return Promise.resolve()
   }
 }

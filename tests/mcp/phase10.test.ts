@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { ErrorCode } from '../../src/core/errors.js'
+import { InMemoryObservationSink } from '../../src/core/observability.js'
 import { McpManager, parseMcpServerConfigs } from '../../src/mcp/index.js'
 import type {
   McpClientConnection,
@@ -65,10 +66,12 @@ describe('Phase 10：MCP', () => {
     const [config] = parseMcpServerConfigs([
       { name: 'inventory', transport: 'stdio', command: 'fake' },
     ])
+    const observations = new InMemoryObservationSink()
     const manager = new McpManager({
       configs: [config!],
       registry,
       factoryFor: () => factory,
+      observationSink: observations,
     })
     await manager.initialize()
 
@@ -89,6 +92,17 @@ describe('Phase 10：MCP', () => {
     expect(registry.get('mcp_inventory_search_items')).toBeUndefined()
     expect(registry.get('mcp_inventory_get_item')).toBeDefined()
     expect(manager.catalogVersion).toBe(2)
+    await manager.shutdown()
+    expect(observations.records.map((record) => record.type)).toEqual(
+      expect.arrayContaining([
+        'mcp.connecting',
+        'mcp.catalog.changed',
+        'mcp.connected',
+        'mcp.tool.started',
+        'mcp.tool.completed',
+        'mcp.disconnected',
+      ]),
+    )
   })
 
   it('非只读远端调用断线时标记 UNKNOWN，并按阈值打开熔断器', async () => {

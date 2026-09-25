@@ -28,6 +28,7 @@ const defaultResolver: SecretResolver = {
   async resolve(ref) {
     if (ref.source === 'env') return process.env[ref.key]
     if (ref.source === 'file') return (await readFile(ref.key, 'utf8')).trim()
+    if (ref.source === 'value') return ref.key
     return undefined
   },
 }

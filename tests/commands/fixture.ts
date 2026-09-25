@@ -13,6 +13,8 @@ import {
   CommandResultCode,
   type CommandConfigView,
   type CommandHost,
+  type ProviderConfigurationInput,
+  type ProviderConfigurationResult,
 } from '../../src/commands/types.js'
 import type { PrincipalId, SessionId, TurnId } from '../../src/core/ids.js'
 
@@ -134,6 +136,7 @@ export class RecordingHost implements CommandHost {
   }[] = []
   readonly tierAssignments: { tier: string; providerId: string; modelId: string }[] = []
   readonly contextWindowWrites: { tier: string; contextWindow: number }[] = []
+  readonly providerAdds: ProviderConfigurationInput[] = []
   readonly idempotency = new Map<string, { requestHash: string; response: unknown }>()
   busy = false
   config: CommandConfigView = makeConfig()
@@ -194,6 +197,58 @@ export class RecordingHost implements CommandHost {
     this.contextWindowWrites.push({ tier, contextWindow })
     this.config = { ...this.config, models: this.#patchActiveModel(tier, { contextWindow }) }
     return Promise.resolve()
+  }
+  addProviderConfiguration(
+    input: ProviderConfigurationInput,
+  ): Promise<ProviderConfigurationResult> {
+    this.providerAdds.push(input)
+    const providerId = `provider_${input.name.toLowerCase().replace(/\W+/g, '_')}`
+    const envName = `DEEPCODE_${input.name.replace(/[^a-zA-Z0-9]+/g, '_').toUpperCase()}_API_KEY`
+    const assignedImplementation = !this.config.tiers.some((tier) => tier.tier === 'implementation')
+    this.config = {
+      ...this.config,
+      providers: [
+        ...this.config.providers,
+        {
+          id: providerId,
+          name: input.name,
+          baseUrl: input.baseUrl,
+          enabled: true,
+          hasSecret: false,
+        },
+      ],
+      models: [
+        ...this.config.models,
+        ...input.modelIds.map((id) => ({
+          id,
+          providerId,
+          displayName: id,
+          enabled: true,
+          supportsTools: true,
+          supportsThinking: false,
+          supports1MContext: false,
+          contextWindow: input.contextWindow,
+          maxOutputTokens: input.maxOutputTokens,
+        })),
+      ],
+      tiers: assignedImplementation
+        ? [
+            ...this.config.tiers,
+            {
+              tier: 'implementation',
+              providerId,
+              modelId: input.modelIds[0] ?? '',
+              enabled: true,
+            },
+          ]
+        : this.config.tiers,
+    }
+    return Promise.resolve({
+      providerId,
+      envName,
+      modelIds: input.modelIds,
+      assignedImplementation,
+    })
   }
   /** 按档位找到它指向的模型条目并打补丁——与 `AgentApplication` 的真实行为同形。 */
   #patchActiveModel(

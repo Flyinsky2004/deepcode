@@ -3,8 +3,7 @@
  *
  * ## 关于"未实现子系统"的处理原则
  *
- * 有几条命令指向尚未实现的子系统（MCP 属 Phase 10、可观测性属
- * Phase 11）。它们**一律返回 `not_available` 并说明原因**，
+ * 尚未实现的远程 exporter 命令会返回 `not_available` 并说明原因，
  * 而不是：
  *
  * - 返回假数据（用户会以为功能可用）；
@@ -20,6 +19,7 @@ import { ErrorCode } from '../../core/errors.js'
 import { CommandRegistry } from '../registry.js'
 import { CommandResultCode, type CommandDefinition, type CommandResult } from '../types.js'
 import { createInitCommand } from './init.js'
+import { createApiCommand } from './api.js'
 import { createModelCommand } from './model.js'
 import {
   createContextModeCommand,
@@ -333,9 +333,8 @@ export function createBuiltinCommandRegistry(): CommandRegistry {
     createEffortCommand(),
     createContextModeCommand(),
 
-    // 诚实降级：这些命令指向尚未实现的子系统。
-    // 它们**存在**（用户在补全列表里能看到、能理解为什么不可用），
-    // 但绝不假装成功。
+    // `/skills`、`/mcp` 已接入真实子系统；`/langfuse` 仍只代表尚未实现的
+    // 远程 exporter，因此继续诚实降级，绝不假装成功。
     skillsCommand(),
     mcpCommand(),
     unavailableCommand({
@@ -344,18 +343,10 @@ export function createBuiltinCommandRegistry(): CommandRegistry {
       subsystem: '可观测性',
       phase: 'Phase 11',
     }),
-    unavailableCommand({
-      name: 'api',
-      description: '管理 provider',
-      subsystem: 'provider 管理界面',
-      // ⚠️ 这一条**不是**"还没排到"，而是**刻意的推迟**，理由见 ADR 0004 D10：
-      // 旧语法 `/api add deepseek <明文 API key>` 把密钥放进命令行参数，
-      // 与 parts/09 §9.1「API key 不得出现在日志、事件、导出文件、URL 或
-      // 前端响应中」直接冲突；而给 provider 管理设计一套安全的输入路径
-      // （SecretRef 表单 / 连接测试 / 脱敏展示）是独立的一项工作。
-      // 在此之前，用户通过编辑 `~/.deepcode/config.json` 添加 provider。
-      phase: '需要先决定 SecretRef 输入方式（见 ADR 0004 D10）',
-    }),
+    // `/api` 只写环境变量形式的 SecretRef，命令参数中没有明文 key 槽位。
+    createApiCommand(),
   ])
   return registry
 }
+
+export { createApiCommand } from './api.js'

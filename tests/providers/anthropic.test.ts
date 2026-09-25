@@ -95,7 +95,7 @@ describe('AnthropicMessagesProvider 请求构造与鉴权', () => {
     ).rejects.toMatchObject({ code: ErrorCode.PROVIDER_AUTH_FAILED })
   })
 
-  it('默认解析器支持 env / file 两种来源，keychain 返回 undefined', async () => {
+  it('默认解析器支持 env / file / value 三种来源，keychain 返回 undefined', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'deepcode-secret-'))
     const secretFile = join(dir, 'key.txt')
     await writeFile(secretFile, '  sk-from-file\n', 'utf8')
@@ -120,7 +120,16 @@ describe('AnthropicMessagesProvider 请求构造与鉴权', () => {
     })
     await collect(fromFile.stream({ model: 'm', maxTokens: 10, messages: [] }, neverAborts()))
 
-    expect(captured).toEqual(['sk-from-env', 'sk-from-file'])
+    const fromValue = new AnthropicMessagesProvider({
+      provider: {
+        ...provider,
+        apiKeyRef: { source: 'value', key: 'inline-direct-test-value' },
+      },
+      fetchImpl: capture,
+    })
+    await collect(fromValue.stream({ model: 'm', maxTokens: 10, messages: [] }, neverAborts()))
+
+    expect(captured).toEqual(['sk-from-env', 'sk-from-file', 'inline-direct-test-value'])
 
     // keychain 来源旧实现未落地，默认解析器返回 undefined → 视为密钥不可用。
     const fromKeychain = new AnthropicMessagesProvider({

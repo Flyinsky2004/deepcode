@@ -2,7 +2,7 @@
 
 跨客户端、跨模型的本地 Agent runtime。TypeScript 实现。
 
-> **当前状态：Phase 0–10 主流程已实现；`readonly` OS 沙箱与 Phase 11 质量门禁仍待完成。**
+> **当前状态：Phase 0–11 主流程与自动质量门禁已实现；`readonly` OS 沙箱与真实 endpoint 验收仍待完成。**
 > 已具备本地存储/恢复、Anthropic 流式 provider、turn 主循环、统一权限工具链、结构化上下文压缩、
 > slash command 层与三端（TUI / Web UI / CLI）共用的 `AgentApplication`。
 > 真实 Anthropic endpoint 的连通验收仍需用户凭据（Phase 2 的验收项）。
@@ -27,12 +27,14 @@ pnpm install
 
 pnpm typecheck        # 类型检查（tsc --noEmit）
 pnpm test             # 运行全部测试
+pnpm test:quality     # Phase 11 定向质量回归（无需真实密钥）
 pnpm test:watch       # 监听模式
 pnpm test:coverage    # 覆盖率（阈值 80%）
 pnpm lint             # ESLint
 pnpm format           # Prettier 格式化
 pnpm build            # 产出 dist/
 pnpm check            # typecheck + lint + format:check + test
+pnpm quality          # 完整检查 + 覆盖率门禁
 ```
 
 启动 TUI：
@@ -68,6 +70,44 @@ pnpm vitest run -t "test name"
 ```
 
 提交前请确保 `pnpm check` 通过。
+
+## Provider 配置
+
+在 TUI 或 Web 命令入口运行 `/api` 查看当前 provider。新增 Anthropic-compatible
+endpoint 时只填写非敏感信息：
+
+```text
+/api add <名称> <base-url> <模型ID[,模型ID...]> [context-window] [max-output-tokens]
+```
+
+例如：
+
+```text
+/api add "My Provider" https://example.com/anthropic model-a,model-b 128000 8192
+```
+
+`/api` **不接收明文 API key**。命令会原子写入 provider、模型与尚未配置的
+`implementation` 档位，并返回一个环境变量名，例如
+`DEEPCODE_MY_PROVIDER_API_KEY`。请通过操作系统环境或自己的 secret manager 设置该变量，
+然后重启 deepcode。默认不要把明文 key 写入 slash command 或 `config.json`；如果明确接受
+本地明文落盘风险，才使用下方的 `value` 模式。
+
+如明确接受明文落盘风险，也可以停止 deepcode 后编辑 `~/.deepcode/config.json`，把对应
+provider 改为：
+
+```json
+"apiKeyRef": {
+  "source": "value",
+  "key": "实际 API key"
+}
+```
+
+`source: "value"` 只允许从本地配置读取，`/api` 仍不会接收或回显明文。请至少执行
+`chmod 600 ~/.deepcode/config.json`，并确保该文件不进入 Git、云同步、备份或问题报告。
+
+模型能力使用保守缺省：工具调用开启，thinking、vision 与 1M 上下文关闭；确认 endpoint
+支持后可在 `~/.deepcode/config.json` 的对应 model profile 中显式调整。`/api` 面板只显示
+“密钥就绪/等待环境变量”，不会读取或回显密钥内容。
 
 ## Skills
 
@@ -186,6 +226,7 @@ src/
   skills/       # Skill 系统（Phase 8）
   subagents/    # 子代理（Phase 9）
   mcp/          # MCP 客户端（Phase 10）
+  observability/# 本地结构化日志、脱敏与指标聚合（Phase 11）
   clients/      # 表现层：TUI / CLI / Web UI（Phase 7+）
 tests/          # 与 src 同构的测试
 ```

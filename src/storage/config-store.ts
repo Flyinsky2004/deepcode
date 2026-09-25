@@ -23,7 +23,10 @@ function asNum(value: unknown, fallback: number): number {
 function normalizeSecret(value: unknown): SecretRef {
   if (
     isRecord(value) &&
-    (value['source'] === 'env' || value['source'] === 'keychain' || value['source'] === 'file')
+    (value['source'] === 'env' ||
+      value['source'] === 'keychain' ||
+      value['source'] === 'file' ||
+      value['source'] === 'value')
   ) {
     return { source: value['source'], key: asString(value['key']) }
   }
@@ -35,7 +38,7 @@ function normalizeProvider(value: unknown): StoredProvider | undefined {
   const secret = value['apiKeyRef'] ?? value['api_key_ref']
   if (
     !isRecord(secret) ||
-    !['env', 'file', 'keychain'].includes(String(secret['source'])) ||
+    !['env', 'file', 'keychain', 'value'].includes(String(secret['source'])) ||
     typeof secret['key'] !== 'string' ||
     !secret['key'].trim()
   )
@@ -211,20 +214,7 @@ export class ConfigStore {
   }
 
   async upsertModelProfile(profile: ModelProfile): Promise<ConfigDocument> {
-    if (
-      !profile.id.trim() ||
-      !profile.providerId.trim() ||
-      !Number.isSafeInteger(profile.contextWindow) ||
-      profile.contextWindow <= 0 ||
-      !Number.isSafeInteger(profile.maxOutputTokens) ||
-      profile.maxOutputTokens <= 0 ||
-      profile.maxOutputTokens > profile.contextWindow
-    )
-      throw new AgentError({
-        code: ErrorCode.VALIDATION_FAILED,
-        message: 'invalid model profile',
-        source: 'config',
-      })
+    this.validateModelProfile(profile)
     const provider = await this.read().then((d) =>
       d.providers.find((p) => p.id === profile.providerId),
     )
@@ -259,6 +249,96 @@ export class ConfigStore {
         assignment,
       ],
     }))
+  }
+
+  /**
+   * 原子新增一个 provider、它的模型，以及可选的初始档位。
+   *
+   * `/api add` 不能依次调用三个 upsert：第三步失败会留下只有 provider、没有
+   * 模型的半配置。这里把校验和写入收进同一个原子更新。
+   */
+  async addProviderBundle(
+    provider: StoredProvider,
+    profiles: readonly ModelProfile[],
+    initialAssignment?: TierAssignment,
+  ): Promise<{ readonly document: ConfigDocument; readonly assignmentAdded: boolean }> {
+    this.validateProvider(provider)
+    if (!provider.name.trim())
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'provider name is required',
+        source: 'config',
+      })
+    if (profiles.length === 0)
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'provider requires at least one model profile',
+        source: 'config',
+      })
+    for (const profile of profiles) {
+      this.validateModelProfile(profile)
+      if (profile.providerId !== provider.id)
+        throw new AgentError({
+          code: ErrorCode.VALIDATION_FAILED,
+          message: 'model profile belongs to a different provider',
+          source: 'config',
+        })
+    }
+    if (new Set(profiles.map((profile) => profile.id)).size !== profiles.length)
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'duplicate model id in provider bundle',
+        source: 'config',
+      })
+    if (
+      initialAssignment !== undefined &&
+      !Object.values(ModelTier).includes(initialAssignment.tier)
+    )
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'invalid tier assignment',
+        source: 'config',
+      })
+    if (
+      initialAssignment !== undefined &&
+      (initialAssignment.modelRef.providerId !== provider.id ||
+        !profiles.some((profile) => profile.id === initialAssignment.modelRef.modelId))
+    )
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'initial tier assignment must reference a model in the provider bundle',
+        source: 'config',
+      })
+
+    let assignmentAdded = false
+    const document = await this.update((doc) => {
+      if (
+        doc.providers.some(
+          (item) =>
+            item.id === provider.id ||
+            item.name.trim().toLowerCase() === provider.name.trim().toLowerCase(),
+        )
+      )
+        throw new AgentError({
+          code: ErrorCode.VALIDATION_FAILED,
+          message: `provider already exists: ${provider.name}`,
+          source: 'config',
+        })
+
+      const canAssign =
+        initialAssignment !== undefined &&
+        !doc.tier_assignments.some((item) => item.tier === initialAssignment.tier)
+      assignmentAdded = canAssign
+      return {
+        ...doc,
+        providers: [...doc.providers, provider],
+        model_profiles: [...doc.model_profiles, ...profiles],
+        tier_assignments: canAssign
+          ? [...doc.tier_assignments, initialAssignment]
+          : doc.tier_assignments,
+      }
+    })
+    return { document, assignmentAdded }
   }
 
   async update(mutator: (doc: ConfigDocument) => ConfigDocument): Promise<ConfigDocument> {
@@ -312,6 +392,23 @@ export class ConfigStore {
       throw new AgentError({
         code: ErrorCode.VALIDATION_FAILED,
         message: 'provider apiKeyRef is required',
+        source: 'config',
+      })
+  }
+
+  private validateModelProfile(profile: ModelProfile): void {
+    if (
+      !profile.id.trim() ||
+      !profile.providerId.trim() ||
+      !Number.isSafeInteger(profile.contextWindow) ||
+      profile.contextWindow <= 0 ||
+      !Number.isSafeInteger(profile.maxOutputTokens) ||
+      profile.maxOutputTokens <= 0 ||
+      profile.maxOutputTokens > profile.contextWindow
+    )
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'invalid model profile',
         source: 'config',
       })
   }

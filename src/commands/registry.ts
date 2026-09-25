@@ -107,6 +107,15 @@ export class CommandRegistry {
       )
 
     // 3. 参数校验 —— 失败时**不得提交模型请求**（§6.1 第 5 条）
+    if (
+      definition.parameters.rejectExtraPositionals === true &&
+      parsed.args.length > definition.parameters.positionals.length
+    )
+      return fail(
+        CommandResultCode.INVALID_ARGUMENTS,
+        `参数过多：/${definition.name} 不接受额外参数`,
+        ErrorCode.INVALID_COMMAND_ARGUMENTS,
+      )
     const args = argObject(parsed, definition)
     const invalid = validateArgs(definition, args)
     if (invalid)

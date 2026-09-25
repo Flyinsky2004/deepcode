@@ -110,6 +110,30 @@ describe('ConfigStore provider 归一化', () => {
     expect(doc.providers[0]!.updatedAt).not.toBe('')
   })
 
+  it('apiKeyRef 支持显式 value 明文模式并原样往返', async () => {
+    const { store, path } = await makeStore()
+    await writeFile(
+      path,
+      JSON.stringify({
+        schema_version: 1,
+        providers: [
+          {
+            id: 'inline',
+            name: 'Inline',
+            baseUrl: 'https://example.com',
+            apiKeyRef: { source: 'value', key: 'direct-config-secret' },
+          },
+        ],
+      }),
+      'utf8',
+    )
+
+    expect((await store.read()).providers[0]?.apiKeyRef).toEqual({
+      source: 'value',
+      key: 'direct-config-secret',
+    })
+  })
+
   it('id 与 name 缺省时用随机 UUID 兜底', async () => {
     const { store, path } = await makeStore()
     await writeFile(
@@ -496,5 +520,66 @@ describe('ConfigStore baseUrl 校验', () => {
       code: ErrorCode.VALIDATION_FAILED,
       message: 'provider apiKeyRef is required',
     })
+  })
+})
+
+describe('ConfigStore provider bundle 原子写入', () => {
+  const storedProvider = { ...provider, enabled: true }
+  const assignment: TierAssignment = {
+    tier: ModelTier.IMPLEMENTATION,
+    modelRef: { providerId: 'p1', modelId: 'm1' },
+    enabled: true,
+    fallbackModelRefs: [],
+  }
+
+  it('一次写入 provider、models 与空缺档位', async () => {
+    const { store } = await makeStore()
+    const result = await store.addProviderBundle(storedProvider, [profile], assignment)
+    expect(result.assignmentAdded).toBe(true)
+    expect(result.document).toMatchObject({
+      providers: [{ id: 'p1' }],
+      model_profiles: [{ id: 'm1', providerId: 'p1' }],
+      tier_assignments: [{ tier: ModelTier.IMPLEMENTATION }],
+    })
+  })
+
+  it('已有档位时保留原分配', async () => {
+    const { store } = await makeStore()
+    await store.setTierAssignment({
+      ...assignment,
+      modelRef: { providerId: 'old', modelId: 'old-model' },
+    })
+    const result = await store.addProviderBundle(storedProvider, [profile], assignment)
+    expect(result.assignmentAdded).toBe(false)
+    expect(result.document.tier_assignments[0]?.modelRef).toEqual({
+      providerId: 'old',
+      modelId: 'old-model',
+    })
+  })
+
+  it('重复名称或非法模型时整体不写入', async () => {
+    const { store } = await makeStore()
+    await store.addProviderBundle(storedProvider, [profile])
+    await expect(
+      store.addProviderBundle({ ...storedProvider, id: 'p2', name: 'p1' }, [
+        { ...profile, providerId: 'p2' },
+      ]),
+    ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_FAILED })
+    await expect(
+      store.addProviderBundle({ ...storedProvider, id: 'p3', name: 'P3' }, [
+        { ...profile, providerId: 'p3', maxOutputTokens: 200_000 },
+      ]),
+    ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_FAILED })
+    await expect(
+      store.addProviderBundle(
+        { ...storedProvider, id: 'p4', name: 'P4' },
+        [{ ...profile, providerId: 'p4' }],
+        { ...assignment, modelRef: { providerId: 'p4', modelId: 'ghost' } },
+      ),
+    ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_FAILED })
+
+    const doc = await store.read()
+    expect(doc.providers.map((item) => item.id)).toEqual(['p1'])
+    expect(doc.model_profiles.map((item) => item.providerId)).toEqual(['p1'])
   })
 })

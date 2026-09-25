@@ -468,6 +468,38 @@ describe('Phase 6 验收 4：/model use 与四条偏好命令真的改变行为'
   })
 })
 
+describe('安全版 /api：不经命令传递明文密钥', () => {
+  it('从共用注册表原子写入 provider/model，并用幂等键避免重复添加', async () => {
+    const { app, run } = await build()
+    const raw = '/api add "Provider Three" https://three.example.test/anthropic m3,m4 64000 4096'
+
+    const first = await run(raw, 'api-add-1')
+    const replay = await run(raw, 'api-add-1')
+    expect(first.ok).toBe(true)
+    expect(replay).toEqual(first)
+    expect(first.text).toContain('DEEPCODE_PROVIDER_THREE_API_KEY')
+
+    const doc = await app.configStore.read()
+    const added = doc.providers.filter((provider) => provider.name === 'Provider Three')
+    expect(added).toHaveLength(1)
+    expect(added[0]?.apiKeyRef).toEqual({
+      source: 'env',
+      key: 'DEEPCODE_PROVIDER_THREE_API_KEY',
+    })
+    expect(
+      doc.model_profiles
+        .filter((model) => model.providerId === added[0]?.id)
+        .map((model) => model.id),
+    ).toEqual(['m3', 'm4'])
+    expect(JSON.stringify(doc)).not.toContain('<API_KEY>')
+
+    const panel = await run('/api')
+    expect(panel.code).toBe(CommandResultCode.PANEL)
+    expect(panel.text).toContain('Provider Three')
+    expect(panel.text).toContain('等待环境变量')
+  })
+})
+
 // ── 注册表契约 ────────────────────────────────────────────────────
 
 describe('Phase 6 验收：命令表与诚实降级', () => {
@@ -489,19 +521,21 @@ describe('Phase 6 验收：命令表与诚实降级', () => {
     }
   })
 
-  it('MCP 已实现，其余未实现子系统仍然诚实地降级', async () => {
+  it('MCP 与安全版 /api 已实现，Langfuse exporter 仍诚实降级', async () => {
     const { run } = await build()
     const mcp = await run('/mcp')
     expect(mcp.ok).toBe(true)
     expect(mcp.code).toBe(CommandResultCode.PANEL)
     expect(mcp.text).toContain('MCP')
-    for (const raw of ['/langfuse', '/api']) {
-      const result = await run(raw)
-      expect(result.ok).toBe(false)
-      expect(result.code).toBe(CommandResultCode.NOT_AVAILABLE)
-      expect(result.errorCode).toBe('COMMAND_NOT_AVAILABLE')
-      // 必须说明原因，而不是一句"失败"
-      expect(result.text.length).toBeGreaterThan(10)
-    }
+    const api = await run('/api')
+    expect(api.ok).toBe(true)
+    expect(api.code).toBe(CommandResultCode.PANEL)
+
+    const langfuse = await run('/langfuse')
+    expect(langfuse.ok).toBe(false)
+    expect(langfuse.code).toBe(CommandResultCode.NOT_AVAILABLE)
+    expect(langfuse.errorCode).toBe('COMMAND_NOT_AVAILABLE')
+    // 必须说明原因，而不是一句"失败"
+    expect(langfuse.text.length).toBeGreaterThan(10)
   })
 })

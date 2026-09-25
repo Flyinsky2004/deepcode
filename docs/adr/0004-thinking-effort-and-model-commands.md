@@ -245,9 +245,9 @@ budgetTokens = min(desired, budgetable - reserve)
 不掺入参（否则并发下会出现 `data.modelId = A` 而 `data.tiers[...] = B` 的
 同一条响应内部矛盾）。
 
-### D10 `/api` **不纳入** Phase 6 范围
+### D10 `/api` **不纳入** Phase 6 范围（已于 2026-09-25 后续解决）
 
-`/api` 继续返回 `COMMAND_NOT_AVAILABLE`，但**理由变了**——不是"还没排到"，
+Phase 6 收尾时，`/api` 继续返回 `COMMAND_NOT_AVAILABLE`，但**理由变了**——不是"还没排到"，
 而是刻意的推迟：
 
 - 旧语法 `/api add deepseek <明文 API key>` 把密钥放进命令行参数，
@@ -260,6 +260,26 @@ budgetTokens = min(desired, budgetable - reserve)
 在此之前，用户通过编辑 `~/.deepcode/config.json` 添加 provider。
 `ConfigStore.upsertProvider` / `upsertModelProfile` / `setTierAssignment`
 已经具备（含 `baseUrl` 校验与 provider 存在性检查），只是还没有安全的上层入口。
+
+#### 后续决议：无明文密钥参数的 `/api add`
+
+2026-09-25 起，`/api` 已开放只读列表与安全写入：
+
+- `/api add <名称> <base-url> <模型列表> [context-window] [max-output-tokens]`；
+- 命令签名中**没有 API key 参数**，多余参数会在审计前拒绝；
+- 写入时生成 `env` 类型 `SecretRef`，回执只显示环境变量名；
+- provider、model profiles 与缺省 implementation 档位在一次原子更新中写入；
+- 默认不在 `config.json` 保存明文密钥，用户在启动进程前通过环境变量提供。
+
+这解决了 D10 的安全阻塞，同时保留原决策的核心约束：任何客户端都没有接收、
+记录或回显明文 API key 的入口。
+
+#### 2026-09-26 例外：本地 `source: value`
+
+按用户明确要求，`SecretRef.source` 增加 `value`，其 `key` 字段直接保存明文。
+这是对「配置只保存引用」的显式例外，而不是默认行为：`/api add` 继续只生成 `env`
+引用，只有手工编辑 `config.json` 才能启用。命令配置视图不再携带完整 raw 文档，
+Web DTO 与本地观测对 `{source: "value", key: ...}` 做结构化脱敏，避免明文继续传播。
 
 ## 影响
 

@@ -18,9 +18,8 @@
  *
  * - Textual 的 CSS（`border: round #334155`）在这里换成 **Ink 的 `borderStyle`**，
  *   颜色沿用同一批硬编码值；
- * - Textual 的 `Markdown` widget 会解析 `**bold**`，Ink 的 `Text` 不会——
- *   因此角色标签、面板标题改成**用颜色与加粗属性表达**，而不是在文本里放
- *   标记字符。可观测的语义（谁说了什么、哪一行是标题）不变。
+ * - Markdown 消息由 `MarkdownText` 解析为 Ink 组件；角色标签仍由视图单独
+ *   绘制，避免把格式化层的 `**` 当成标签文字显示。
  * - **布局的层级与角色与旧实现一致**（`#chat-area` / `#empty-state` /
  *   `#message-view` / `#composer` / `#todo-panel` / `#command-menu` /
  *   `#input-label` / `#prompt-input` / `#status-bar`，见 `theme.ts` 的 `IDS`）。
@@ -36,7 +35,7 @@ import { TKey } from './i18n/keys.js'
 import { translate } from './i18n/index.js'
 
 import {
-  formatMessageDisplay,
+  messageToDisplay,
   renderPanelText,
   renderSelectionText,
   renderTodoPanel,
@@ -45,6 +44,7 @@ import { renderStatusBar } from './status-bar.js'
 import { APP_TITLE, COLORS, EMPTY_LOGO, FOOTER_HINT } from './theme.js'
 import { resolveInputPrompt, selectionTargetsMenu, type KeyInput } from './keys.js'
 import { permissionHintText } from './events.js'
+import { MarkdownText } from './markdown.js'
 import type { TuiController } from './controller.js'
 import type { Message } from '../../core/models.js'
 import type { TuiState } from './types.js'
@@ -115,9 +115,16 @@ function MessageBlock({
   readonly message: Message
   readonly language: TuiState['language']
 }): ReactElement {
-  const display = formatMessageDisplay(message, language)
-  const [label, ...rest] = display.split('\n\n')
-  const body = rest.join('\n\n')
+  const label = translate(
+    language,
+    message.role === 'user'
+      ? TKey.LABEL_YOU
+      : message.role === 'assistant'
+        ? TKey.LABEL_ASSISTANT
+        : message.role === 'tool'
+          ? TKey.LABEL_TOOL
+          : TKey.LABEL_SYSTEM,
+  )
   const color =
     message.role === 'user'
       ? COLORS.logo
@@ -129,7 +136,7 @@ function MessageBlock({
       <Text color={color} bold>
         {label}
       </Text>
-      <Text color={COLORS.screenText}>{body}</Text>
+      <MarkdownText source={messageToDisplay(message)} />
     </Box>
   )
 }
@@ -140,7 +147,7 @@ function MessageView({ state }: { readonly state: TuiState }): ReactElement {
   if (state.panel) {
     return (
       <Box flexDirection="column">
-        <Text color={COLORS.body}>{renderPanelText(state.panel)}</Text>
+        <MarkdownText source={renderPanelText(state.panel)} />
       </Box>
     )
   }
@@ -162,10 +169,10 @@ function MessageView({ state }: { readonly state: TuiState }): ReactElement {
           <Text color={COLORS.body} bold>
             {translate(state.language, TKey.LABEL_ASSISTANT)}
           </Text>
-          <Text color={COLORS.screenText}>{state.streamingText}</Text>
+          <MarkdownText source={state.streamingText} />
         </Box>
       ) : null}
-      {state.notice ? <Text color={COLORS.muted}>{state.notice}</Text> : null}
+      {state.notice ? <MarkdownText source={state.notice} /> : null}
       {/*
         审批说明（`_show_permission_request` 的 hint）。
         从队列派生而不是存进状态：见 `events.ts` 的说明。
@@ -174,14 +181,12 @@ function MessageView({ state }: { readonly state: TuiState }): ReactElement {
         （`PERM_TITLE` 自带 `## Permission Required` 标题）。
       */}
       {state.permissionQueue[0] ? (
-        <Text color={COLORS.body}>
-          {permissionHintText(state.permissionQueue[0], state.language)}
-        </Text>
+        <MarkdownText source={permissionHintText(state.permissionQueue[0], state.language)} />
       ) : null}
       {state.lastError ? (
-        <Text color={COLORS.todoTitle}>
-          {translate(state.language, TKey.MISC_ERROR_PREFIX, { error: state.lastError })}
-        </Text>
+        <MarkdownText
+          source={translate(state.language, TKey.MISC_ERROR_PREFIX, { error: state.lastError })}
+        />
       ) : null}
     </Box>
   )

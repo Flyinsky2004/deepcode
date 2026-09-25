@@ -99,9 +99,14 @@ export function redactKeys(value: unknown, depth = 0): unknown {
   if (Array.isArray(value)) return value.map((item) => redactKeys(item, depth + 1))
   if (value === null || typeof value !== 'object') return value
 
+  const record = value as Record<string, unknown>
+  const inlineSecret = record['source'] === 'value' && typeof record['key'] === 'string'
   const out: Record<string, unknown> = {}
-  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = isSensitiveKey(key) ? REDACTED : redactKeys(item, depth + 1)
+  for (const [key, item] of Object.entries(record)) {
+    out[key] =
+      isSensitiveKey(key) || (inlineSecret && key === 'key')
+        ? REDACTED
+        : redactKeys(item, depth + 1)
   }
   return out
 }
@@ -120,9 +125,14 @@ export function redactSecrets(value: unknown, depth = 0): unknown {
   if (Array.isArray(value)) return value.map((item) => redactSecrets(item, depth + 1))
   if (value === null || typeof value !== 'object') return value
 
+  const record = value as Record<string, unknown>
+  const inlineSecret = record['source'] === 'value' && typeof record['key'] === 'string'
   const out: Record<string, unknown> = {}
-  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = isSensitiveKey(key) ? REDACTED : redactSecrets(item, depth + 1)
+  for (const [key, item] of Object.entries(record)) {
+    out[key] =
+      isSensitiveKey(key) || (inlineSecret && key === 'key')
+        ? REDACTED
+        : redactSecrets(item, depth + 1)
   }
   return out
 }

@@ -11,7 +11,13 @@ import { statSync } from 'node:fs'
 import { AgentError, ErrorCode } from '../core/errors.js'
 import type { PrincipalId, SessionId, TurnId } from '../core/ids.js'
 import type { ModelTier } from '../core/provider.js'
-import type { CommandConfigView, CommandHost, CommandResult } from '../commands/types.js'
+import type {
+  CommandConfigView,
+  CommandHost,
+  CommandResult,
+  ProviderConfigurationInput,
+  ProviderConfigurationResult,
+} from '../commands/types.js'
 import { CommandResultCode } from '../commands/types.js'
 import type { AgentApplication } from './agent-application.js'
 
@@ -23,6 +29,7 @@ import type { AgentApplication } from './agent-application.js'
  */
 function secretAvailable(ref: { source: string; key: string } | undefined): boolean {
   if (!ref) return false
+  if (ref.source === 'value') return ref.key.trim().length > 0
   if (ref.source === 'env') {
     const value = process.env[ref.key]
     return typeof value === 'string' && value.length > 0
@@ -124,6 +131,7 @@ export class CommandHostAdapter implements CommandHost {
       providers: doc.providers.map((p) => ({
         id: p.id,
         name: p.name,
+        baseUrl: p.baseUrl,
         enabled: p.enabled,
         hasSecret: secretAvailable(p.apiKeyRef),
       })),
@@ -150,7 +158,9 @@ export class CommandHostAdapter implements CommandHost {
         enabled: t.enabled,
       })),
       settings: doc.app_settings,
-      raw: doc,
+      // 命令没有读取完整配置文档的正当需求；只保留非敏感元信息。
+      // `source: value` 会把明文放在 apiKeyRef.key，绝不能通过 raw 进入命令结果。
+      raw: { schema_version: doc.schema_version },
     }
   }
 
@@ -191,6 +201,12 @@ export class CommandHostAdapter implements CommandHost {
 
   async setModelContextWindow(tier: ModelTier, contextWindow: number): Promise<void> {
     await this.#app.setModelContextWindow(tier, contextWindow)
+  }
+
+  addProviderConfiguration(
+    input: ProviderConfigurationInput,
+  ): Promise<ProviderConfigurationResult> {
+    return this.#app.addProviderConfiguration(input)
   }
 
   listSkills() {

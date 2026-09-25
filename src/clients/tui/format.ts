@@ -63,6 +63,13 @@ function asNumber(value: unknown, fallback = 0): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
+/** Pick a fence longer than any backtick run in untrusted tool/model output. */
+function codeFence(content: string, language = ''): string {
+  const longest = Math.max(0, ...Array.from(content.matchAll(/`+/g), ([run]) => run.length))
+  const fence = '`'.repeat(Math.max(3, longest + 1))
+  return `${fence}${language}\n${content}\n${fence}`
+}
+
 /**
  * `message_to_display`：把持久化消息还原成可读文本。
  *
@@ -95,7 +102,7 @@ function formatAssistantBlocks(blocks: readonly unknown[]): string {
         thinking.length > THINKING_PREVIEW_CHARS
           ? `${thinking.slice(0, THINKING_PREVIEW_CHARS)}...`
           : thinking
-      parts.push(`\n\n💭 **thinking**\n\`\`\`\n${preview}\n\`\`\`\n`)
+      parts.push(`\n\n💭 **thinking**\n${codeFence(preview)}\n`)
     } else if (block['type'] === 'text') {
       parts.push(asString(block['text']))
     } else if (block['type'] === 'tool_use') {
@@ -122,7 +129,7 @@ function formatToolUseInput(input: Json): string {
           value.length > TOOL_INPUT_PREVIEW_CHARS
             ? `${value.slice(0, TOOL_INPUT_PREVIEW_CHARS)}...`
             : value
-        lines.push(`- **${key}**:\n\`\`\`\n${preview}\n\`\`\``)
+        lines.push(`- **${key}**:\n${codeFence(preview)}`)
       }
     } else if (typeof value === 'boolean') {
       lines.push(`- **${key}**: \`${value ? 'true' : 'false'}\``)
@@ -206,7 +213,7 @@ function formatToolResult(message: Message, parsed: Json): string {
 
 /** 结果正文：先截断字符数，再尝试 JSON 美化，最后按行数折叠。 */
 export function formatResultContent(content: string): string {
-  if (content.trim().length === 0) return '```\n(empty)\n```'
+  if (content.trim().length === 0) return codeFence('(empty)')
 
   let text = content
   if (text.length > MAX_RESULT_CHARS) text = `${text.slice(0, MAX_RESULT_CHARS)}\n... [truncated]`
@@ -222,9 +229,12 @@ export function formatResultContent(content: string): string {
   const lines = formatted.split('\n')
   if (lines.length > MAX_RESULT_LINES) {
     const preview = lines.slice(0, MAX_RESULT_LINES).join('\n')
-    return `\`\`\`${lang}\n${preview}\n... (${lines.length - MAX_RESULT_LINES} more lines, collapsed)\n\`\`\``
+    return codeFence(
+      `${preview}\n... (${lines.length - MAX_RESULT_LINES} more lines, collapsed)`,
+      lang,
+    )
   }
-  return `\`\`\`${lang}\n${formatted}\n\`\`\``
+  return codeFence(formatted, lang)
 }
 
 /**

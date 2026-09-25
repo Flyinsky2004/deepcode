@@ -30,8 +30,8 @@ import { type ToolDescriptor } from './tool.js'
 /**
  * 供应商。
  *
- * ⚠️ `apiKeyRef` **只保存引用，不保存明文**（parts/09 §9.1）。明文密钥不得出现在
- * 日志、事件、导出文件、URL 或前端响应中，也不能写进 `chat.json`。
+ * `apiKeyRef` 默认保存外部引用；`source: 'value'` 是用户显式选择的本地明文模式。
+ * 无论来源如何，密钥都不得进入日志、事件、导出文件、URL、前端响应或 `chat.json`。
  */
 export interface Provider {
   /** 稳定 UUID。**不使用名称作为主键**——名称可改，ID 不可变。 */
@@ -49,13 +49,13 @@ export interface Provider {
 /**
  * 密钥引用。
  *
- * 间接层的目的：让密钥可以存放在环境变量、系统钥匙串或文件里，
- * 而配置本身可以安全地导出与同步。
+ * `env` / `keychain` / `file` 让配置可安全导出；`value` 会把明文直接写入
+ * `config.json`，仅供用户明确接受本地磁盘风险时使用。
  */
 export interface SecretRef {
   /** 取密钥的来源。 */
-  readonly source: 'env' | 'keychain' | 'file'
-  /** 来源内的定位符（环境变量名、钥匙串条目、文件路径）。 */
+  readonly source: 'env' | 'keychain' | 'file' | 'value'
+  /** 来源内的定位符；`value` 模式下这里就是明文密钥。 */
   readonly key: string
 }
 
@@ -221,8 +221,7 @@ export function thinkingConfigFor(
   if (profile.thinkingEnabled !== true) return undefined
   if (!Number.isFinite(maxTokens)) return undefined
   // 取整：`maxOutputTokens` 只由 `upsertModelProfile` 保证是安全整数，
-  // 而手改 `config.json`（ADR 0004 D10 明确引导用户这么做）可以写小数，
-  // 归一化不会拦它。
+  // 而外部手改 `config.json` 或旧数据仍可能含小数，归一化不会拦它。
   const budgetable = Math.floor(maxTokens)
   if (budgetable <= 0) return undefined
 

@@ -55,6 +55,12 @@ export interface TurnModelSnapshot {
   readonly supports1MContext: boolean
 }
 
+/**
+ * turn 路由快照不保存 SecretRef。旧数据可能仍带引用，因此读取类型保留兼容分支。
+ * 特别是 `source: value` 的明文只能存在于全局 config.json，不能复制到 chat.json。
+ */
+export type PersistedProviderSnapshot = Provider | Omit<Provider, 'apiKeyRef'>
+
 /** 可恢复的 turn 状态。 */
 export interface PersistedTurn {
   readonly sessionId: string
@@ -82,7 +88,7 @@ export interface PersistedTurn {
   readonly finalizing?: boolean
   readonly cumulativeInputTokens?: number
   readonly routeSnapshot?: {
-    readonly provider: Provider
+    readonly provider: PersistedProviderSnapshot
     readonly model: ModelProfile
     readonly tier: ModelTier
   }

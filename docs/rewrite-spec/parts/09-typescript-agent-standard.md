@@ -277,12 +277,15 @@ interface Provider {
   id: string;                 // 稳定 UUID，不使用名称作为主键
   name: string;               // 用户可读名称
   baseUrl: string;            // Anthropic API 根地址
-  apiKeyRef: SecretRef;       // 只保存 secret store 引用，不把明文写入 chat.json
+  apiKeyRef: SecretRef;       // 默认保存 secret store 引用；value 是显式本地明文模式
   createdAt: string; updatedAt: string;
 }
 ```
 
-`baseUrl` 必须规范化，客户端在其上拼接 `/v1/messages`；不能把完整 endpoint 和 base URL 混用。API key 不得出现在日志、事件、导出文件、URL 或前端响应中。连接测试必须验证鉴权、流式响应、tool use 和 usage，而不是只发一个普通文本请求。
+`baseUrl` 必须规范化，客户端在其上拼接 `/v1/messages`；不能把完整 endpoint 和 base URL 混用。
+`SecretRef.source = "value"` 允许用户明确选择把明文保存在全局 `config.json`，但该值不得复制到
+`chat.json`。无论来源如何，API key 都不得出现在日志、事件、导出文件、URL 或前端响应中。
+连接测试必须验证鉴权、流式响应、tool use 和 usage，而不是只发一个普通文本请求。
 
 一个 provider 可以添加多个模型：
 

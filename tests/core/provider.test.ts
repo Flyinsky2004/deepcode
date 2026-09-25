@@ -224,8 +224,8 @@ describe('thinkingConfigFor', () => {
   })
 
   it('maxTokens 非有限或非整数时的行为是确定的', () => {
-    // 手改 config.json（ADR 0004 D10 明确引导用户这么做）可以写小数或坏值；
-    // `asNum` 只校验 Number.isFinite，归一化不会拦它。
+    // 外部手改 config.json 或旧数据仍可能含小数或坏值；`asNum` 只校验
+    // Number.isFinite，归一化不会拦它。
     expect(thinkingConfigFor(base, Number.NaN)).toBeUndefined()
     expect(thinkingConfigFor(base, Number.POSITIVE_INFINITY)).toBeUndefined()
     expect(thinkingConfigFor(base, 0)).toBeUndefined()

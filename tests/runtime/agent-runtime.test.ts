@@ -25,6 +25,7 @@ import { ChatStore } from '../../src/storage/chat-store.js'
 import { resolveAppPaths } from '../../src/storage/paths.js'
 import { inputHash } from '../../src/storage/audit.js'
 import { InMemoryEventSink } from '../../src/core/events.js'
+import { InMemoryObservationSink, type ObservationSink } from '../../src/core/observability.js'
 import { AgentError, ErrorCode } from '../../src/core/errors.js'
 import { EMPTY_WORKING_MEMORY } from '../../src/core/context.js'
 import {
@@ -202,6 +203,7 @@ interface HarnessOptions {
   readonly maxTurns?: number
   /** 替换 contextBuilder，用于制造"上下文组装阶段抛异常"的场景。 */
   readonly buildContext?: unknown
+  readonly observationSink?: ObservationSink
 }
 
 async function harness(options: HarnessOptions = {}) {
@@ -214,6 +216,7 @@ async function harness(options: HarnessOptions = {}) {
     registry,
     permissionEngine: options.permissionEngine ?? new DefaultPermissionEngine(),
     chatStore: store,
+    ...(options.observationSink === undefined ? {} : { observationSink: options.observationSink }),
   })
   const builder = new ContextBuilder({ chatStore: store, tools: () => registry.descriptors() })
   const sink = new InMemoryEventSink()
@@ -223,6 +226,7 @@ async function harness(options: HarnessOptions = {}) {
     contextBuilder: (options.buildContext ?? builder) as ContextBuilder,
     toolExecutor: executor,
     eventSink: sink,
+    ...(options.observationSink === undefined ? {} : { observationSink: options.observationSink }),
     workspaceRoot: dir,
     principalId: 'p',
     ...(options.provider === undefined ? {} : { provider: options.provider }),
@@ -584,9 +588,11 @@ describe('压缩触发', () => {
         return Promise.resolve(undefined)
       },
     } as unknown as ContextCompactor
+    const observations = new InMemoryObservationSink()
     const h = await harness({
       provider: scriptedProvider({ events: [text('ok')] }).provider,
       compactor,
+      observationSink: observations,
     })
 
     const result = await h.runtime.submitMessage(h.conversation.id, 'go')
@@ -602,6 +608,14 @@ describe('压缩触发', () => {
     const end = h.findEvent('compact_end')
     // 压缩器返回 undefined 表示"没有真正压缩"，事件必须如实反映
     expect((end?.data as { applied: boolean }).applied).toBe(false)
+    expect(observations.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'compact.completed',
+          data: expect.objectContaining({ strategy: 'preflight', applied: false }),
+        }),
+      ]),
+    )
   })
 
   it('provider 报 CONTEXT_EXCEEDED 时做一次 reactive 压缩并重试本轮', async () => {
@@ -621,6 +635,7 @@ describe('压缩触发', () => {
         })
       },
     } as unknown as ContextCompactor
+    const observations = new InMemoryObservationSink()
     const h = await harness({
       provider: scriptedProvider(
         {
@@ -633,12 +648,24 @@ describe('压缩触发', () => {
         { events: [text('压缩后成功')] },
       ).provider,
       compactor,
+      observationSink: observations,
     })
 
     const result = await h.runtime.submitMessage(h.conversation.id, 'go')
     expect(result.status).toBe(TurnStatus.COMPLETED)
     expect(result.final_text).toBe('压缩后成功')
     expect(reactiveCalls).toBe(1)
+    expect(h.events().map((event) => event.type)).toEqual(
+      expect.arrayContaining(['compact_start', 'compact_end']),
+    )
+    expect(observations.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'compact.completed',
+          data: expect.objectContaining({ strategy: 'reactive', applied: true }),
+        }),
+      ]),
+    )
     // 第二次超限时不再压缩，而是按上下文超限收尾（覆盖 590）
     let secondReactive = 0
     const h2 = await harness({
@@ -1491,6 +1518,116 @@ describe('恢复搁置的工作', () => {
     expect(seen[0]?.candidates).toEqual([{ providerId: 'snap-provider', modelId: 'snap-model' }])
     // 请求里用的是快照的 maxOutputTokens
     expect(script.requests[0]?.maxTokens).toBe(512)
+  })
+
+  it('source=value 只留在全局配置，不复制进 turn routeSnapshot', async () => {
+    const inlineSecret = 'direct-config-secret-without-known-prefix'
+    const provider: Provider = {
+      id: 'inline-provider',
+      name: 'inline',
+      baseUrl: 'https://api.example.invalid',
+      apiKeyRef: { source: 'value', key: inlineSecret },
+      createdAt: '',
+      updatedAt: '',
+    }
+    const model = {
+      id: 'inline-model',
+      providerId: provider.id,
+      contextWindow: 4096,
+      maxOutputTokens: 512,
+      supportsThinking: false,
+      supportsTools: true,
+      supportsVision: false,
+      supports1MContext: false,
+      enabled: true,
+    }
+    const config: ConfigDocument = {
+      schema_version: 1,
+      llm_channels: [],
+      llm_models: [],
+      app_settings: {},
+      providers: [{ ...provider, enabled: true }],
+      model_profiles: [model],
+      tier_assignments: [
+        {
+          tier: 'implementation',
+          modelRef: { providerId: provider.id, modelId: model.id },
+          enabled: true,
+          fallbackModelRefs: [],
+        },
+      ],
+    }
+    const script = scriptedProvider({ events: [text('ok')] })
+    const h = await harness({
+      router: new ModelRouter(config),
+      providerFactory: () => script.provider,
+    })
+
+    const result = await h.runtime.submitMessage(h.conversation.id, 'go')
+    const stored = await persisted(h.store, h.conversation.id, result.turn_id)
+    expect(JSON.stringify(stored)).not.toContain(inlineSecret)
+    expect(stored.routeSnapshot?.provider).not.toHaveProperty('apiKeyRef')
+  })
+
+  it('恢复无凭据快照时从当前 config 补取 source=value，但仍不重新落盘', async () => {
+    const inlineSecret = 'direct-config-secret-for-resume'
+    const provider: Provider = {
+      id: 'inline-provider',
+      name: 'inline',
+      baseUrl: 'https://api.example.invalid',
+      apiKeyRef: { source: 'value', key: inlineSecret },
+      createdAt: '',
+      updatedAt: '',
+    }
+    const model = {
+      id: 'inline-model',
+      providerId: provider.id,
+      contextWindow: 4096,
+      maxOutputTokens: 512,
+      supportsThinking: false,
+      supportsTools: true,
+      supportsVision: false,
+      supports1MContext: false,
+      enabled: true,
+    }
+    const config: ConfigDocument = {
+      schema_version: 1,
+      llm_channels: [],
+      llm_models: [],
+      app_settings: {},
+      providers: [{ ...provider, enabled: true }],
+      model_profiles: [model],
+      tier_assignments: [],
+    }
+    const seen: Provider[] = []
+    const script = scriptedProvider({ events: [text('恢复')] })
+    const h = await harness({
+      router: new ModelRouter(config),
+      providerFactory: (route) => {
+        seen.push(route.provider)
+        return script.provider
+      },
+    })
+    const turn = await seedTurn(h.store, h.conversation.id, TurnPhase.BUILDING_CONTEXT, {
+      routeSnapshot: {
+        provider: {
+          id: provider.id,
+          name: provider.name,
+          baseUrl: provider.baseUrl,
+          createdAt: provider.createdAt,
+          updatedAt: provider.updatedAt,
+        },
+        model,
+        tier: 'implementation',
+      },
+    })
+
+    const result = await h.runtime.resumeTurn(h.conversation.id, turn.turnId as TurnId)
+    expect(result.status).toBe(TurnStatus.COMPLETED)
+    expect(seen[0]?.apiKeyRef).toEqual({ source: 'value', key: inlineSecret })
+    expect(
+      JSON.stringify(await persisted(h.store, h.conversation.id, result.turn_id)),
+    ).not.toContain(inlineSecret)
   })
 
   it('routeSnapshot 存在但没有 providerFactory：兜底构造真实 provider，缺密钥即以 failed 收尾', async () => {

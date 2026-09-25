@@ -18,7 +18,7 @@
 - [x] 实现 Slash Commands 与 `/workwith`（见下方 Phase 6 段）
 - [x] 实现 TUI / Web UI（见下方「Phase 7 已完成」段）
 - [x] 实现 Sub-agent、MCP（Phase 9–10）
-- [ ] 完成跨模型和恢复测试
+- [x] 完成跨模型和恢复测试
 
 ## 设计约束
 
@@ -261,10 +261,12 @@ Phase 6 的主体（注册表、管线、`/workwith`、`/sessions`、`/clear`、
 - **思考预算可能超出 provider 请求超时**（`xhigh` = 48k > 官方提示的 32k 线），
   触发时裸 `AbortError` 会变成 `INTERNAL_ERROR` 而非可识别的"超时"
   ——违反设计约束 6。归 Phase 11。
-- **`/api` 仍为诚实降级**，且理由变了：不是"还没排到"，而是刻意的推迟
-  ——旧语法 `/api add deepseek <明文 API key>` 与 `parts/09` §9.1
-  「密钥不得出现在日志、事件、URL 或前端响应」冲突，且需要一套独立的
-  SecretRef 输入设计。见 ADR 0004 D10。
+- **`/api` 的安全入口已于 2026-09-25 补齐**：命令不接收明文 key，自动生成
+  `env` SecretRef，并原子写入 provider、模型和空缺的 implementation 档位。
+  D10 的原始推迟理由与后续决议均保留在 ADR 0004。
+- **2026-09-26 增加显式明文模式**：手工配置可用
+  `apiKeyRef: {"source":"value","key":"..."}`；`/api` 参数仍禁止明文，命令视图、
+  Web DTO 与观测日志必须脱敏。该模式牺牲配置文件可安全导出性，默认仍为 `env`。
 - **`/workwith` 的回执在 turn 结束后才返回**：`AgentApplication.submitTurn`
   会等到 turn 收尾（与 Web 的 `POST /api/turns` 同语义）。要做到事前提示需要
   一条非阻塞提交路径，属 Phase 7 层面的决策。
@@ -325,17 +327,17 @@ Phase 6 的主体（注册表、管线、`/workwith`、`/sessions`、`/clear`、
 > （`/model use`、`/thinking` 等的 runtime 消费、`/init` 转录）**已全部落地**。
 
 契约层（`CommandDefinition` / `CommandHost` 端口 / 执行管线）、`/workwith` 与 model-ref 消歧
-已落地。内置 **15 条命令**：**12 条真实现**（`/workwith` `/init` `/sessions` `/clear`
+已落地。内置 **15 条命令**：**14 条真实现**（`/workwith` `/init` `/sessions` `/clear`
 `/compact` `/language` `/model` 含写分支 `/thinking` `/reasoning` `/effort` `/1M`）、
-`/skills` 于 Phase 8 接入真实注册表，`/mcp` 于 Phase 10 接入真实管理器；**2 条诚实降级**
-（`/langfuse` `/api`，返回 `COMMAND_NOT_AVAILABLE` + 具体原因，不返回假数据、不用空列表假装成功）。
+`/skills` 于 Phase 8 接入真实注册表，`/mcp` 于 Phase 10 接入真实管理器，安全版
+`/api` 支持只读列表与无明文密钥的原子添加；**1 条诚实降级**（`/langfuse` exporter，
+返回 `COMMAND_NOT_AVAILABLE` + 具体原因，不返回假数据、不用空列表假装成功）。
 
-`/langfuse` 指向尚未实现的可观测性子系统（Phase 11）；`/api` 是**刻意推迟**，
-理由见 ADR 0004 D10。
+本地可观测性已在 Phase 11 落地；`/langfuse` 仅指尚未实现的远程 exporter。
 
 ### 已知限制
 
-- 覆盖率四项均高于阈值（语句 95.31 / 分支 91.22 / 函数 96.44 / 行 96.8，阈值 80）。
+- 覆盖率四项均高于 80% 阈值；当前全量数据见文末「测试与覆盖率」。
 - `chat.json` 仍是全量重写（写放大），需独立 ADR 与迁移工具才能改为 append-only。
 - `/workwith` 的回执在 turn 结束后才返回（见「Phase 6 的收尾内容」段的已知限制）。
 
@@ -424,11 +426,20 @@ server 并行连接、故障相互隔离；远端工具以显式 map 注册为 `
 
 ## Phase 11：可观测性和质量门禁
 
-- [ ] 本地结构化日志先于 Langfuse
-- [ ] 记录 model route、tool execution、permission、compact、sub-agent、MCP 生命周期
-- [ ] 实现 token、cost、latency、retry、fallback、failure stage 指标
-- [ ] 默认脱敏 API key、环境变量、路径 secrets 和工具参数
-- [ ] 建立跨 provider、跨模型、跨客户端的回归测试
+- [x] 本地结构化日志先于 Langfuse
+- [x] 记录 model route、tool execution、permission、compact、sub-agent、MCP 生命周期
+- [x] 实现 token、cost、latency、retry、fallback、failure stage 指标
+- [x] 默认脱敏 API key、环境变量、路径 secrets 和工具参数
+- [x] 建立跨 provider、跨模型、跨客户端的回归测试
+
+本地观测默认写入工作区 `.deepcode/observability.ndjson`，使用 append-only NDJSON、
+`0600` 权限与写前递归脱敏。内核只依赖 `ObservationSink`，后续 Langfuse 作为 exporter
+接入，不参与本地真相源。`aggregateTurnMetrics()` 从日志确定性聚合用量、成本、耗时、
+重试、回退与失败阶段；模型单价缺失时成本保持为 0，不伪造价格。
+
+自动门禁：`pnpm test:quality` 跑 Phase 11 定向回归；`pnpm quality` 跑完整静态检查、
+全量测试与覆盖率。跨端用例让 CLI/直接调用、TUI reducer 与 Web DTO 消费同一事件流，
+并用两个 Anthropic-compatible provider/model 的离线夹具验证重试和 fallback。
 
 ## 发布前检查
 
@@ -439,24 +450,24 @@ server 并行连接、故障相互隔离；远端工具以显式 map 注册为 `
 - [x] `/workwith`、模型档位和 fallback 行为有测试
       （`tests/acceptance/phase6.test.ts`、`tests/commands/model*.test.ts`、
       `tests/runtime/agent-runtime.test.ts` 的 `model_route_changed 事件` 段）
-- [ ] Anthropic-only 协议在流式文本、thinking、tool use、usage、错误和取消场景下通过测试
+- [x] Anthropic-only 协议在流式文本、thinking、tool use、usage、错误和取消场景下通过测试
 - [x] TUI、CLI、Web UI 使用同一 Agent runtime
 - [x] README、配置示例和本文件中的参数名称一致
 
 ## 测试与覆盖率
 
-最近一次全量数据（Phase 7 收尾后，`pnpm check` 与 `pnpm test:coverage` 均 exit 0）：
+最近一次全量数据（Phase 11 自动门禁完成后，`pnpm check` 与 `pnpm test:coverage` 均 exit 0）：
 
 | 项 | 值 | 阈值 |
 |---|---|---|
-| 测试文件 / 用例 | 80 / 1709 | — |
-| 语句 | 94.48% | 80% |
-| 分支 | 90.76% | 80% |
-| 函数 | 95.93% | 80% |
-| 行 | 95.95% | 80% |
+| 测试文件 / 用例 | 88 / 1760 | — |
+| 语句 | 89.83% | 80% |
+| 分支 | 82.29% | 80% |
+| 函数 | 91.18% | 80% |
+| 行 | 91.59% | 80% |
 
 阶段验收：`tests/acceptance/phase0.test.ts`、`phase1-5.test.ts`、
-`phase6.test.ts`、`phase7.test.ts`。
+`phase6.test.ts`、`phase7.test.ts`、`phase11.test.ts`。
 
 ## 实施原则
 

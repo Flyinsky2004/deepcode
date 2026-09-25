@@ -40,6 +40,14 @@ describe('editInputValue', () => {
     })
   })
 
+  it('空格键在普通输入框中插入空格', () => {
+    expect(editInputValue('/languagezh', 9, key('space'))).toEqual({
+      value: '/language zh',
+      cursor: 10,
+      changed: true,
+    })
+  })
+
   it('退格删除光标前的字符', () => {
     expect(editInputValue('abc', 2, key('backspace'))).toEqual({
       value: 'ac',

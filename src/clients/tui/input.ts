@@ -51,8 +51,9 @@ export function isPrintable(char: string): boolean {
 export function editInputValue(value: string, cursor: number, key: KeyInput): EditResult {
   const position = Math.max(0, Math.min(cursor, value.length))
   switch (key.name) {
+    case 'space':
     case 'char': {
-      const char = key.char ?? ''
+      const char = key.name === 'space' ? ' ' : (key.char ?? '')
       if (!isPrintable(char)) return { value, cursor: position, changed: false }
       return {
         value: `${value.slice(0, position)}${char}${value.slice(position)}`,

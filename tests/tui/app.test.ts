@@ -414,7 +414,10 @@ describe('命令与面板', () => {
     const { lastFrame, stdin } = render(createElement(TuiApp, { controller }))
     await waitForFrame(lastFrame, 'Message')
 
-    stdin.write('/language zh')
+    stdin.write('/language')
+    stdin.write(' ')
+    stdin.write('zh')
+    expect(controller.getState().input).toBe('/language zh')
     stdin.write('\r')
     const frame = await waitForFrame(lastFrame, '界面语言已切换为 zh')
     // 输入框 label/placeholder 也变成中文（旧实现不会重绘这一点）

@@ -291,6 +291,8 @@ export interface PendingApprovalDto {
   readonly toolCallId: string
   /** 已由 `ToolExecutor` 脱敏并截断的参数摘要。 */
   readonly argsPreview: string
+  /** bash 的待执行命令；仅从当前待审批队列读取，不进入事件或审计。 */
+  readonly commandPreview?: string
   readonly riskLevel: string
   readonly reason: string
   readonly createdAt: string
@@ -308,6 +310,9 @@ export function toPendingApprovalDto(view: PendingApprovalView): PendingApproval
     // 再涂一遍是**有意的冗余**：`args_preview` 的脱敏属于 executor，
     // 而这里是最后一道出口。两张网比一张网可靠，代价只是一次字符串扫描。
     argsPreview: redactValueShapes(view.argsPreview),
+    ...(view.commandPreview === undefined
+      ? {}
+      : { commandPreview: redactValueShapes(view.commandPreview) }),
     riskLevel: view.riskLevel,
     reason: view.reason,
     createdAt: view.createdAt,

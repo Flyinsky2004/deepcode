@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
-    <meta name="theme-color" content="#f5f6f8" />
+    <meta name="theme-color" content="#ffffff" />
     <title>deepcode · 工作台</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -26,20 +26,69 @@
 
     <main id="app" class="hidden app-shell">
       <aside class="sidebar" aria-label="主导航">
-        <a class="brand" href="/projects" data-route
-          ><span class="brand-mark" aria-hidden="true">D</span
-          ><span>deepcode<small>WORKSPACE</small></span></a
-        >
-        <div class="sidebar-label">工作区</div>
+        <a class="brand" href="/projects" data-route>deepcode <span aria-hidden="true">⌄</span></a>
         <nav class="main-nav" aria-label="页面">
-          <a href="/projects" data-route data-nav="projects"
-            ><span aria-hidden="true">▦</span> 项目</a
+          <button id="new-session" type="button" class="nav-action" aria-label="新建对话">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-6" />
+              <path d="M13 11 20 4m-4 0h4v4" />
+            </svg>
+            <span class="nav-label">新对话</span>
+          </button>
+          <a href="/projects" data-route data-nav="projects" aria-label="项目"
+            ><svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <path d="M3 10h18" />
+            </svg>
+            <span class="nav-label">项目</span></a
           >
-          <a href="/commands" data-route data-nav="commands"
-            ><span aria-hidden="true">⌘</span> 命令</a
+          <a href="/commands" data-route data-nav="commands" aria-label="命令"
+            ><svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4" width="18" height="16" rx="3" />
+              <path d="m7 9 3 3-3 3m6 0h4" />
+            </svg>
+            <span class="nav-label">命令</span></a
           >
-          <a href="/settings" data-route data-nav="settings" id="open-settings"
-            ><span aria-hidden="true">⚙</span> 设置</a
+          <a href="/settings" data-route data-nav="settings" id="open-settings" aria-label="设置"
+            ><svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06-2 2-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V21h-2.83v-.1A1.7 1.7 0 0 0 11 19.34a1.7 1.7 0 0 0-1.87.34l-.06.06-2-2 .06-.06A1.7 1.7 0 0 0 7.47 15a1.7 1.7 0 0 0-1.56-1.04H5v-2.83h.91A1.7 1.7 0 0 0 7.47 10a1.7 1.7 0 0 0-.34-1.87l-.06-.06 2-2 .06.06A1.7 1.7 0 0 0 11 6.47a1.7 1.7 0 0 0 1.04-1.56V4h2.83v.91A1.7 1.7 0 0 0 15.9 6.47a1.7 1.7 0 0 0 1.87-.34l.06-.06 2 2-.06.06A1.7 1.7 0 0 0 19.4 10a1.7 1.7 0 0 0 1.56 1.04H21v2.83h-.04A1.7 1.7 0 0 0 19.4 15Z"
+              />
+            </svg>
+            <span class="nav-label">设置</span></a
           >
         </nav>
         <div class="sidebar-section">
@@ -52,16 +101,7 @@
         </div>
         <div class="sidebar-section sessions-section">
           <div class="sidebar-section-head">
-            <span>最近对话</span
-            ><button
-              id="new-session"
-              type="button"
-              class="icon-button"
-              aria-label="新建对话"
-              title="新建对话"
-            >
-              ＋
-            </button>
+            <span>最近对话</span>
           </div>
           <ul id="session-list" class="session-list"></ul>
         </div>
@@ -86,7 +126,17 @@
               aria-label="切换到暗色模式"
               aria-pressed="false"
             >
-              <span class="theme-icon" aria-hidden="true">◐</span
+              <svg
+                class="theme-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z" /></svg
               ><span id="theme-label">暗色模式</span>
             </button>
           </div>
@@ -174,7 +224,25 @@
                 aria-controls="command-menu"
                 aria-autocomplete="list"
               ></textarea
-              ><button id="send" type="submit" class="button button-primary">发送 ↑</button>
+              ><button
+                id="send"
+                type="submit"
+                class="button button-primary"
+                aria-label="发送消息"
+                title="发送消息"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 19V5m-6 6 6-6 6 6" />
+                </svg>
+              </button>
             </form>
             <p class="composer-hint">Enter 发送 · Shift + Enter 换行 · / 打开命令</p>
           </div>
@@ -536,9 +604,10 @@
           >）请求执行。
         </p>
         <p id="approval-reason" class="text-sm text-slate-400"></p>
+        <p id="approval-command-label" class="approval-command-label hidden">待执行命令</p>
         <pre
           id="approval-args"
-          class="max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300"
+          class="max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300"
         ></pre>
         <p id="approval-error" class="hidden text-sm text-rose-400"></p>
         <div class="flex flex-wrap justify-end gap-2">

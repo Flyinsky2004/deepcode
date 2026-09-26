@@ -475,7 +475,11 @@ export interface ApprovalService {
    * ⚠️ **必须幂等**：同一 `request.request_id` 重复调用应返回同一决定，
    * 不得重复弹窗或重复执行（重连、重试、恢复都会触发重复调用）。
    */
-  request(request: PermissionRequest, signal: AbortSignal): Promise<PermissionResolution>
+  request(
+    request: PermissionRequest,
+    signal: AbortSignal,
+    presentation?: { readonly commandPreview?: string },
+  ): Promise<PermissionResolution>
 }
 
 /** 用户对权限请求的决议。 */

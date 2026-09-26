@@ -362,6 +362,30 @@ describe('ToolExecutor 权限决策', () => {
     )
   })
 
+  it('bash 审批单独提供命令预览，审计请求仍保留脱敏摘要', async () => {
+    let commandPreview = ''
+    const approvalService: ApprovalService = {
+      request: (request, _signal, presentation) => {
+        commandPreview = presentation?.commandPreview ?? ''
+        return Promise.resolve({
+          requestId: request.request_id,
+          decision: PermissionAction.ALLOW,
+          resolvedBy: 'user',
+        })
+      },
+    }
+    const { executor, store } = await harness([fakeTool({ descriptor: { name: 'bash' } })], {
+      permissionEngine: engine(PermissionAction.ASK),
+      approvalService,
+    })
+
+    await executor.executeNamed('bash', options({ input: { command: 'npm run build' } }))
+
+    expect(commandPreview).toBe('npm run build')
+    const [saved] = await store!.listPermissionRequests()
+    expect(saved?.args_preview).toBe('{"command":"[redacted]"}')
+  })
+
   it('审批被拒时返回拒绝理由并记录失败', async () => {
     const approvalService: ApprovalService = {
       request: (request): Promise<PermissionResolution> =>

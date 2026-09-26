@@ -85,6 +85,29 @@ describe('审批：HTTP 往返', () => {
     expect(after.approvals).toHaveLength(0)
   })
 
+  it('bash 待审批接口展示命令，广播和参数摘要仍保持脱敏', async () => {
+    const h = await harness()
+    const sessionId = await h.newSession()
+    const request = permissionRequest(sessionId, {
+      tool_name: 'bash',
+      args_preview: '{"command":"[redacted]"}',
+    })
+    const waiting = h.app.broker?.request(request, new AbortController().signal, {
+      commandPreview: 'npm run build',
+    })
+
+    const pending = await readJson<{
+      approvals: { argsPreview: string; commandPreview?: string }[]
+    }>(await h.fetch('/api/pending'))
+    expect(pending.approvals[0]).toMatchObject({
+      argsPreview: '{"command":"[redacted]"}',
+      commandPreview: 'npm run build',
+    })
+
+    await postJson(h, `/api/permissions/${request.request_id}`, { decision: 'deny' })
+    await waiting
+  })
+
   it('拒绝同样生效', async () => {
     const h = await harness()
     const sessionId = await h.newSession()

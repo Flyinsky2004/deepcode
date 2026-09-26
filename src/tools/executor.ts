@@ -36,6 +36,7 @@ import type { ObservationSink } from '../core/observability.js'
 import type { ToolRegistry } from './registry.js'
 import { inputHash as canonicalInputHash, argsPreview } from '../storage/audit.js'
 import { guardsFromTurnState } from '../skills/guards.js'
+import { approvalCommandPreview } from './approval-preview.js'
 
 export interface ToolExecutorOptions {
   readonly registry: ToolRegistry
@@ -345,7 +346,13 @@ export class ToolExecutor {
           Math.max(0, request.expires_at - this.clock.nowMs()),
         )
         try {
-          resolution = await this.approvalService!.request(request, timeout.signal)
+          resolution = await this.approvalService!.request(
+            request,
+            timeout.signal,
+            toolName === 'bash' && typeof input['command'] === 'string'
+              ? { commandPreview: approvalCommandPreview(input['command']) }
+              : undefined,
+          )
         } catch {
           /* timeout/cancel/UI failure remains a denial */
         } finally {
@@ -413,7 +420,13 @@ export class ToolExecutor {
           ],
         })
         const second = await this.approvalService
-          .request(secondRequest, options.signal)
+          .request(
+            secondRequest,
+            options.signal,
+            toolName === 'bash' && typeof input['command'] === 'string'
+              ? { commandPreview: approvalCommandPreview(input['command']) }
+              : undefined,
+          )
           .catch(() => ({
             requestId: secondRequest.request_id,
             decision: PermissionAction.DENY,

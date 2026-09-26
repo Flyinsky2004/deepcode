@@ -42,6 +42,8 @@ export interface PendingApprovalView {
   readonly toolName: string
   readonly toolCallId: string
   readonly argsPreview: string
+  /** 仅在待审批内存队列中保存，供授权后的 Web 待办接口展示。 */
+  readonly commandPreview?: string
   readonly riskLevel: string
   readonly reason: string
   readonly createdAt: string
@@ -66,6 +68,7 @@ export type ApprovalResolutionResult =
 
 interface PendingApproval {
   readonly request: PermissionRequest
+  readonly commandPreview?: string
   /** 在 `request()` 里挂起、等待决议的调用方。 */
   readonly waiters: Array<(resolution: PermissionResolution) => void>
   readonly timer: ReturnType<typeof setTimeout>
@@ -102,7 +105,11 @@ export class ApprovalBroker implements ApprovalService {
    * 这三条不是修饰语：`ToolExecutor` 用 `withTimeout` 包住它并把任何抛出
    * 都当作拒绝处理，所以"卡住不返回"会直接变成"每次审批都要等满 120 秒"。
    */
-  async request(request: PermissionRequest, signal: AbortSignal): Promise<PermissionResolution> {
+  async request(
+    request: PermissionRequest,
+    signal: AbortSignal,
+    presentation?: { readonly commandPreview?: string },
+  ): Promise<PermissionResolution> {
     const key = request.request_id
 
     // 1. 已解决 —— 幂等回放，**不重发事件**（重连、重试、恢复都会走到这里）
@@ -128,6 +135,9 @@ export class ApprovalBroker implements ApprovalService {
     const delay = Math.max(0, deadline - this.#clock.nowMs())
     const entry: PendingApproval = {
       request,
+      ...(presentation?.commandPreview === undefined
+        ? {}
+        : { commandPreview: presentation.commandPreview }),
       waiters: [],
       timer: setTimeout(() => {
         // 超时按 deny 处理（parts/09 §5）。resolvedBy 为 system，
@@ -223,7 +233,7 @@ export class ApprovalBroker implements ApprovalService {
   listPending(sessionId?: string): readonly PendingApprovalView[] {
     const values = [...this.#pending.values()]
       .filter((e) => sessionId === undefined || e.request.session_id === sessionId)
-      .map((e) => this.#view(e.request))
+      .map((e) => this.#view(e))
     return values
   }
 
@@ -334,7 +344,8 @@ export class ApprovalBroker implements ApprovalService {
       .catch(() => undefined)
   }
 
-  #view(request: PermissionRequest): PendingApprovalView {
+  #view(entry: PendingApproval): PendingApprovalView {
+    const request = entry.request
     return {
       requestId: request.request_id,
       sessionId: request.session_id,
@@ -342,6 +353,7 @@ export class ApprovalBroker implements ApprovalService {
       toolName: request.tool_name,
       toolCallId: request.tool_call_id,
       argsPreview: request.args_preview,
+      ...(entry.commandPreview === undefined ? {} : { commandPreview: entry.commandPreview }),
       riskLevel: request.risk_level,
       reason: request.reason,
       createdAt: request.created_at,

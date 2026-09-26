@@ -170,6 +170,9 @@ function updateThemeButton() {
   el('theme-toggle').setAttribute('aria-pressed', String(dark))
   el('theme-toggle').setAttribute('aria-label', dark ? '切换到浅色模式' : '切换到暗色模式')
   el('theme-label').textContent = dark ? '浅色模式' : '暗色模式'
+  document
+    .querySelector('meta[name="theme-color"]')
+    ?.setAttribute('content', dark ? '#181818' : '#ffffff')
 }
 updateThemeButton()
 el('theme-toggle').addEventListener('click', () => {
@@ -452,7 +455,21 @@ function renderProjects() {
     card.className = 'project-card'
     const icon = document.createElement('span')
     icon.className = 'project-card-icon'
-    icon.textContent = '⌁'
+    icon.setAttribute('aria-hidden', 'true')
+    const folder = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    folder.setAttribute('viewBox', '0 0 24 24')
+    folder.setAttribute('fill', 'none')
+    folder.setAttribute('stroke', 'currentColor')
+    folder.setAttribute('stroke-width', '1.7')
+    folder.setAttribute('stroke-linecap', 'round')
+    folder.setAttribute('stroke-linejoin', 'round')
+    const outline = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    outline.setAttribute(
+      'd',
+      'M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+    )
+    folder.append(outline)
+    icon.append(folder)
     const name = document.createElement('strong')
     name.textContent = project.name
     const path = document.createElement('small')
@@ -897,7 +914,27 @@ async function loadHistory() {
   container.replaceChildren()
   state.liveText = null
   for (const message of payload.messages ?? []) renderMessage(message)
+  if (container.childElementCount === 0) renderChatEmptyState()
   container.scrollTop = container.scrollHeight
+}
+
+function renderChatEmptyState() {
+  const container = el('messages')
+  const empty = document.createElement('div')
+  empty.className = 'chat-empty'
+  const mark = document.createElement('span')
+  mark.className = 'chat-empty-mark'
+  mark.setAttribute('aria-hidden', 'true')
+  mark.textContent = '>_'
+  const heading = document.createElement('h2')
+  const projectName = state.projects.find((item) => item.id === state.projectId)?.name ?? 'deepcode'
+  heading.textContent = `想在 ${projectName} 中构建什么？`
+  empty.append(mark, heading)
+  container.append(empty)
+}
+
+function hideChatEmptyState() {
+  el('messages').querySelector('.chat-empty')?.remove()
 }
 
 function renderMessage(message) {
@@ -905,6 +942,7 @@ function renderMessage(message) {
   const wrap = document.createElement('div')
   const bodyMarkdown = message.displayMarkdown ?? message.content
   if (bodyMarkdown === '') return
+  hideChatEmptyState()
 
   if (message.role === 'user') {
     wrap.className = 'message-user'
@@ -1143,6 +1181,7 @@ function setBusy(busy) {
 
 function appendNote(text, isError = false) {
   const container = el('messages')
+  hideChatEmptyState()
   const node = document.createElement('div')
   node.className = `message-note${isError ? ' error' : ''}`
   node.textContent = text
@@ -1171,11 +1210,26 @@ async function refreshPending() {
 
 function showApproval(view) {
   state.approvalRequestId = view.requestId
+  const isBash = view.toolName === 'bash'
+  const hasCommand =
+    typeof view.commandPreview === 'string' &&
+    view.commandPreview.trim() !== '' &&
+    view.commandPreview.trim() !== '[redacted]'
   el('approval-tool').textContent = view.toolName
-  el('approval-risk').textContent = view.riskLevel
-  el('approval-reason').textContent = view.reason ?? ''
-  el('approval-args').textContent = view.argsPreview ?? ''
-  el('approval-error').classList.add('hidden')
+  el('approval-risk').textContent =
+    { low: '低', medium: '中', high: '高', critical: '极高' }[view.riskLevel] ?? view.riskLevel
+  el('approval-reason').textContent =
+    isBash && view.reason === 'command requires approval'
+      ? '此命令需要批准才能执行。'
+      : (view.reason ?? '')
+  el('approval-command-label').classList.toggle('hidden', !isBash)
+  el('approval-args').textContent =
+    isBash && hasCommand ? view.commandPreview : (view.argsPreview ?? '')
+  el('approval-allow').disabled = isBash && !hasCommand
+  el('approval-allow-once').disabled = isBash && !hasCommand
+  el('approval-error').textContent =
+    isBash && !hasCommand ? '无法读取待执行命令，请刷新页面后重试。' : ''
+  el('approval-error').classList.toggle('hidden', !isBash || hasCommand)
   el('approval-modal').classList.remove('hidden')
   el('approval-modal').classList.add('flex')
 }
@@ -1196,6 +1250,7 @@ async function resolveApproval(decision, grantScope) {
       idempotencyKey: crypto.randomUUID(),
     })
     hideApproval()
+    void refreshPending().catch(() => undefined)
   } catch (error) {
     showError(el('approval-error'), error.message)
   }
@@ -1284,6 +1339,9 @@ async function answerQuestions(requestId, answers) {
 
 function setConnectionState(text) {
   el('connection-state').textContent = text
+  document
+    .querySelector('.status-dot')
+    ?.classList.toggle('connected', /^(已连接|已订阅|已同步|思考中)/.test(text))
 }
 
 async function connect() {
@@ -1407,16 +1465,19 @@ function handleEvent(event) {
       appendNote(`${data.ok ? '✓' : '✗'} ${data.name ?? ''} ${data.error_code ?? ''}`.trim())
       return
     case 'permission_required':
-      showApproval({
-        requestId: data.request_id,
-        toolName: data.tool_name,
-        riskLevel: data.risk_level,
-        reason: data.reason,
-        argsPreview: data.args_preview,
-      })
+      void refreshPending().catch(() =>
+        showApproval({
+          requestId: data.request_id,
+          toolName: data.tool_name,
+          riskLevel: data.risk_level,
+          reason: data.reason,
+          argsPreview: data.args_preview,
+        }),
+      )
       return
     case 'permission_resolved':
       if (data.request_id === state.approvalRequestId) hideApproval()
+      void refreshPending().catch(() => undefined)
       return
     case 'user_input_required':
       void refreshPending()
@@ -1452,6 +1513,7 @@ function handleEvent(event) {
 
 function startLiveText(turnId) {
   const container = el('messages')
+  hideChatEmptyState()
   const node = document.createElement('div')
   node.className = 'message-assistant markdown-body'
   node.dataset.turnId = turnId ?? ''

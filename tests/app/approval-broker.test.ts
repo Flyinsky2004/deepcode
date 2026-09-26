@@ -88,6 +88,22 @@ describe('ApprovalBroker：事件发射（Phase 7 的关键修复）', () => {
     await pending
   })
 
+  it('命令预览只留在待审批队列，不进入广播事件', async () => {
+    const { broker: b, publisher } = broker()
+    const req = request({ expires_at: 1_000_000 + 60_000 })
+    const controller = new AbortController()
+
+    const pending = b.request(req, controller.signal, { commandPreview: 'npm run build' })
+    await settle()
+
+    expect(b.listPending(req.session_id)[0]?.commandPreview).toBe('npm run build')
+    expect(JSON.stringify(publisher.published)).not.toContain('npm run build')
+
+    controller.abort()
+    await pending
+    expect(b.listPending(req.session_id)).toHaveLength(0)
+  })
+
   it('重复 request() 不重复弹窗（幂等）', async () => {
     const { broker: b, publisher } = broker()
     const req = request({ expires_at: 1_000_000 + 60_000 })

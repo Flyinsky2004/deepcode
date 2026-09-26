@@ -11,9 +11,9 @@ import { marked } from '/vendor/marked.js'
  * 1. **不写 `element.style.*`**。CSP 没有 `style-src 'unsafe-inline'`，内联样式
  *    属性同样被拦——写了不会报错，只会静默不生效，是这类页面最难查的 bug。
  *    所有动态外观靠 class 切换。
- * 2. **token 不进 URL**。HTTP 走 `Authorization: Bearer`，WebSocket 走
- *    `POST /api/ws-ticket` 拿一次性 ticket。token 存在 sessionStorage，
- *    关掉标签页即失效。
+ * 2. **token 不进 URL**。启用认证时 HTTP 走 `Authorization: Bearer`，
+ *    WebSocket 走 `POST /api/ws-ticket` 拿一次性 ticket。token 存在
+ *    sessionStorage，关掉标签页即失效。
  * 3. **`replay_complete` 才是"已追平"**。`subscribed` 帧可能排在补发事件之后
  *    （补发是微任务投递的），用它判断会在刷新时过早渲染出半截对话。
  */
@@ -188,7 +188,7 @@ el('theme-toggle').addEventListener('click', () => {
  * 同一个键 + 同样的内容会回放首次结果而不是重跑一遍副作用。
  */
 async function api(path, { method = 'GET', body, idempotencyKey } = {}) {
-  const headers = { Authorization: `Bearer ${state.token}` }
+  const headers = state.token === '' ? {} : { Authorization: `Bearer ${state.token}` }
   if (state.projectId !== null) headers['X-Deepcode-Project'] = state.projectId
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
@@ -212,7 +212,7 @@ async function api(path, { method = 'GET', body, idempotencyKey } = {}) {
   }
 
   if (response.status === 401) {
-    logout('token 无效或已失效，请重新登录。')
+    logout(state.token === '' ? undefined : 'token 无效或已失效，请重新登录。')
     throw new Error('unauthorized')
   }
   if (!response.ok) {
@@ -269,6 +269,7 @@ async function enterApp() {
     if (project === undefined) throw new Error('没有可打开的项目')
     await switchProject(project)
   } catch (error) {
+    el('login').classList.remove('hidden')
     if (error.message !== 'unauthorized') showError(el('login-error'), error.message)
     return
   }
@@ -1508,8 +1509,5 @@ function endTurn(sessionId) {
 
 // ── 启动 ──────────────────────────────────────────────────────────
 
-if (state.token !== '') {
-  void enterApp()
-} else {
-  el('login').classList.remove('hidden')
-}
+// 本机默认模式可以直接进入；需要 token 时，首次 API 请求会显示登录页。
+void enterApp()

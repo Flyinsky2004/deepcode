@@ -45,6 +45,22 @@ describe('健康检查', () => {
 })
 
 describe('鉴权', () => {
+  it('本机无 token 模式仍拒绝跨源写操作', async () => {
+    const h = await harness({ server: { auth: AuthMode.NONE, token: undefined } })
+    expect((await fetch(`${h.baseUrl}/api/projects`)).status).toBe(200)
+
+    const crossOrigin = await fetch(`${h.baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: {
+        Origin: 'http://evil.example',
+        'Content-Type': 'application/json',
+        'Idempotency-Key': crypto.randomUUID(),
+      },
+      body: JSON.stringify({ title: 'x' }),
+    })
+    expect(crossOrigin.status).toBe(403)
+  })
+
   it('无凭据 → 401 + WWW-Authenticate', async () => {
     const h = await harness()
     const response = await fetch(`${h.baseUrl}/api/sessions`)

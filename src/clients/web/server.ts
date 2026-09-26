@@ -238,7 +238,11 @@ export class WebServer {
     const now = options.now ?? ((): number => Date.now())
     const deps = options.deps ?? systemListenDeps()
     const listen = options.listen ?? ListenScope.LOCAL
-    const authMode = options.auth ?? AuthMode.TOKEN
+    // 默认本机监听无需 token。显式 --token 与 --auth token 仍开启认证；
+    // lan/public 继续默认启用 token，避免扩大监听范围时意外裸奔。
+    const authMode =
+      options.auth ??
+      (options.token !== undefined || listen !== ListenScope.LOCAL ? AuthMode.TOKEN : AuthMode.NONE)
     const port = options.port ?? DEFAULT_WEB_PORT
     const portExplicit = options.portExplicit ?? false
 
@@ -522,6 +526,7 @@ export class WebServer {
       url: primaryUrl,
       token,
       authMode,
+      localOnly: listen === ListenScope.LOCAL,
       warnings: [...decision.warnings, ...bindResult.warnings],
     }))
       logger.error(line)

@@ -140,7 +140,7 @@ export class AuthService {
     return this.#principalId
   }
 
-  /** 认证是否被完全关闭。仅 `--auth none`，且 `public` 下不可能为真。 */
+  /** 认证是否被完全关闭。默认 local 或显式 `--auth none`；public 下不可能为真。 */
   get disabled(): boolean {
     return this.#mode === 'none'
   }
@@ -249,12 +249,17 @@ export function formatAccessNotice(input: {
   readonly url: string
   readonly token: string | undefined
   readonly authMode: AuthMode
+  readonly localOnly?: boolean
   readonly warnings: readonly string[]
 }): readonly string[] {
   const lines: string[] = [`[web-ui] 监听 ${input.url}`]
 
   if (input.authMode === 'none') {
-    lines.push('[web-ui] ⚠️ 认证已关闭（--auth none）：任何能访问该地址的人都能驱动 Agent')
+    lines.push(
+      input.localOnly
+        ? '[web-ui] 仅本机监听，无需 token。'
+        : '[web-ui] ⚠️ 认证已关闭（--auth none）：任何能访问该地址的人都能驱动 Agent',
+    )
   } else if (input.token !== undefined) {
     lines.push('[web-ui] 认证 token（仅本次显示，不会写入任何文件）：')
     lines.push(`[web-ui]   ${input.token}`)

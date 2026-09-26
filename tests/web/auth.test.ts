@@ -184,6 +184,18 @@ describe('启动提示', () => {
     expect(lines.join('\n')).toContain('认证已关闭')
   })
 
+  it('默认本机模式提示无需 token', () => {
+    const lines = formatAccessNotice({
+      url: 'http://127.0.0.1:3210',
+      token: undefined,
+      authMode: AuthMode.NONE,
+      localOnly: true,
+      warnings: [],
+    })
+    expect(lines.join('\n')).toContain('无需 token')
+    expect(lines.join('\n')).not.toContain('⚠️')
+  })
+
   it('警告逐条输出', () => {
     const lines = formatAccessNotice({
       url: 'http://0.0.0.0:3210',

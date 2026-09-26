@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
 
 import { ErrorCode } from '../../src/core/errors.js'
+import { AuthMode } from '../../src/clients/web/listen-policy.js'
 import { postJson, startHarness, type WebHarness } from './harness.js'
 
 const open: WebHarness[] = []
@@ -153,6 +154,15 @@ async function connect(
 }
 
 describe('握手与鉴权', () => {
+  it('本机无 token 模式可直接建立 WebSocket', async () => {
+    const h = await harness({ server: { auth: AuthMode.NONE, token: undefined } })
+    const socket = new WebSocket(`ws://127.0.0.1:${String(h.server.port)}/api/stream`, {
+      headers: { Origin: h.baseUrl },
+    })
+    const client = new Client(socket)
+    await client.waitFor(() => client.frames.some((frame) => frame.type === 'ready'))
+  })
+
   it('ticket 认证通过并收到 ready', async () => {
     const h = await harness()
     const client = await connect(h)

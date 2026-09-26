@@ -43,7 +43,7 @@ pnpm quality          # 完整检查 + 覆盖率门禁
 pnpm dev
 ```
 
-启动 Web UI（默认仅监听本机，并在终端输出一次性 bearer token）：
+启动 Web UI（默认仅监听本机，无需 token，浏览器可直接进入）：
 
 ```bash
 pnpm dev --web-ui
@@ -58,7 +58,9 @@ pnpm start -- --web-ui --listen local
 ```
 
 可用参数包括 `--port`、`--listen local|lan|public`、`--host`、`--auth none|token|password`、
-`--token` 和 `--cors <origin[,origin...]>`。`password` 会在启动时明确提示尚未实现；
+`--token` 和 `--cors <origin[,origin...]>`。`local` 默认不鉴权；使用 `--auth token`
+或 `--token <value>` 可为本机访问开启 token。`lan` 和 `public` 默认启用 token；
+`password` 会在启动时明确提示尚未实现；
 `public` 监听必须启用认证；写操作还要求
 `Origin` 校验和 `Idempotency-Key`。
 

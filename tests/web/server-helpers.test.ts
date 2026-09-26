@@ -114,20 +114,86 @@ describe('启动入口', () => {
     await result.server.close()
   })
 
-  it('生成 token 时它是真的随机且被打印出来', async () => {
+  it('默认本机监听无需 token，可直接访问 API', async () => {
     const h = await startHarness()
+    const logger = new MemoryLogger()
     const result = await startWebServer({
       app: h.app,
       host: '127.0.0.1',
       port: 0,
       portExplicit: true,
       disposeApplication: false,
+      logger,
+    })
+    if (!result.ok) throw new Error(result.reason)
+
+    expect(result.server.authMode).toBe(AuthMode.NONE)
+    expect(result.server.token).toBeUndefined()
+    expect(logger.all().join('\n')).toContain('无需 token')
+    expect(logger.all().join('\n')).not.toContain('认证 token')
+    expect((await fetch(`${result.server.urls[0]}/api/projects`)).status).toBe(200)
+    await result.server.close()
+    await h.close()
+  })
+
+  it('显式 --auth token 时生成随机 token 并打印', async () => {
+    const h = await startHarness()
+    const logger = new MemoryLogger()
+    const result = await startWebServer({
+      app: h.app,
+      host: '127.0.0.1',
+      port: 0,
+      portExplicit: true,
+      auth: AuthMode.TOKEN,
+      disposeApplication: false,
+      logger,
     })
     if (!result.ok) throw new Error(result.reason)
 
     expect(result.server.token).toBeTruthy()
     expect(result.server.authMode).toBe(AuthMode.TOKEN)
+    expect(logger.all().join('\n')).toContain(result.server.token)
     await result.server.close()
+    await h.close()
+  })
+
+  it('只传 --token 也会开启认证', async () => {
+    const h = await startHarness()
+    const result = await startWebServer({
+      app: h.app,
+      host: '127.0.0.1',
+      port: 0,
+      portExplicit: true,
+      token: 'explicit-token',
+      disposeApplication: false,
+      logger: silentLogger,
+    })
+    if (!result.ok) throw new Error(result.reason)
+
+    expect(result.server.authMode).toBe(AuthMode.TOKEN)
+    expect(result.server.token).toBe('explicit-token')
+    expect((await fetch(`${result.server.urls[0]}/api/projects`)).status).toBe(401)
+    await result.server.close()
+    await h.close()
+  })
+
+  it('lan 模式默认仍启用 token', async () => {
+    const h = await startHarness()
+    const result = await startWebServer({
+      app: h.app,
+      listen: ListenScope.LAN,
+      host: '127.0.0.1',
+      port: 0,
+      portExplicit: true,
+      disposeApplication: false,
+      logger: silentLogger,
+    })
+    if (!result.ok) throw new Error(result.reason)
+
+    expect(result.server.authMode).toBe(AuthMode.TOKEN)
+    expect((await fetch(`${result.server.urls[0]}/api/projects`)).status).toBe(401)
+    await result.server.close()
+    await h.close()
   })
 
   it('--listen local 默认绑两个 loopback 地址（v4 + v6）', async () => {
@@ -148,6 +214,8 @@ describe('启动入口', () => {
       `http://127.0.0.1:${String(result.server.port)}`,
       `http://[::1]:${String(result.server.port)}`,
     ])
+    expect(result.server.authMode).toBe(AuthMode.NONE)
+    expect(result.server.token).toBeUndefined()
     await result.server.close()
   })
 

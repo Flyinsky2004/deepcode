@@ -26,7 +26,7 @@ agent [options] --web-ui
   --port <1-65535>                 默认 3210
   --listen <local|lan|public>      默认 local
   --host <address>                 可选；必须符合 listen 策略
-  --auth <none|token|password>     默认 token（public 强制 token）
+  --auth <none|token|password>     local 默认 none；lan/public 默认 token
   --token <value>                  可选；未提供时启动时生成并只显示一次
   --cors <origin[,origin...]>      默认仅同源
 ```
@@ -37,7 +37,7 @@ agent [options] --web-ui
 
 | 模式 | 默认绑定地址 | 允许地址 | 认证要求 | 适用范围 |
 |---|---|---|---|---|
-| `local` | `127.0.0.1`（IPv4）和 `::1`（IPv6） | 仅 loopback | token | 本机浏览器 |
+| `local` | `127.0.0.1`（IPv4）和 `::1`（IPv6） | 仅 loopback | 默认 none；可显式启用 token | 本机浏览器 |
 | `lan` | `0.0.0.0` / `::` | 局域网网卡；拒绝公网接口 | token | 同一局域网 |
 | `public` | `0.0.0.0` / `::` | 所有接口 | token 或 password，禁止 none | 明确承担公网暴露责任 |
 
@@ -67,7 +67,7 @@ Web UI 不得接收完整 API key、MCP 环境变量、绝对路径 secrets 或�
 
 ### 认证、授权和浏览器安全
 
-`local` 也必须启用 token，避免本机恶意网页跨端口调用。token 使用高熵随机值，终端只显示一次；不允许把 token 放在 URL、日志、Referer 或 HTML 中。优先使用 `Authorization: Bearer`，WebSocket 通过受保护的握手或短期 ticket 认证。
+`local` 默认无需 token，浏览器可直接进入；同源 Origin 校验仍须阻止其它网页跨端口调用。显式 `--auth token` 或 `--token` 可启用本机认证。token 使用高熵随机值，终端只显示一次；不允许把 token 放在 URL、日志、Referer 或 HTML 中。优先使用 `Authorization: Bearer`，WebSocket 通过受保护的握手或短期 ticket 认证。
 
 默认 CORS 仅允许同源，禁止 `*` 与 credentials 同时使用。启用局域网或公网模式时必须设置严格的 `Origin` 校验、CSRF token、`SameSite` cookie（如使用 cookie）、安全响应头和速率限制。公网模式启动时打印明确警告，并拒绝 `--auth none`；生产部署仍应放在 TLS 反向代理之后。
 
@@ -82,7 +82,7 @@ Web server 启动顺序为：加载配置 → 初始化 storage/event log → �
 ### CLI 示例和验收
 
 ```bash
-agent --web-ui                         # 127.0.0.1:3210，自动生成 token
+agent --web-ui                         # 本机 loopback:3210，无需 token
 agent --web-ui --port 8080             # 仍仅本地可访问
 agent --web-ui --listen lan --port 8080
 agent --web-ui --listen public --auth password --port 443

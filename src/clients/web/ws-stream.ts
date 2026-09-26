@@ -70,6 +70,7 @@ interface Connection {
 
 export interface WebSocketStreamOptions {
   readonly app: AgentApplication
+  readonly projectId?: string
   readonly auth: AuthService
   readonly origins: OriginPolicy
   readonly policy: AppPolicy
@@ -166,6 +167,16 @@ export class WebSocketStream {
           )
     if (!auth.ok) {
       rejectUpgrade(socket, 401, auth.code, auth.reason)
+      return
+    }
+
+    const selected = url.searchParams.get('project')
+    if (
+      selected !== null &&
+      this.#options.projectId !== undefined &&
+      selected !== this.#options.projectId
+    ) {
+      rejectUpgrade(socket, 404, ErrorCode.SESSION_NOT_FOUND, '项目未打开')
       return
     }
 
@@ -454,9 +465,11 @@ function rejectUpgrade(socket: Duplex, status: number, code: ErrorCode, message:
       ? 'Unauthorized'
       : status === 403
         ? 'Forbidden'
-        : status === 503
-          ? 'Service Unavailable'
-          : 'Bad Request'
+        : status === 404
+          ? 'Not Found'
+          : status === 503
+            ? 'Service Unavailable'
+            : 'Bad Request'
   const body = JSON.stringify({ error: { code, message } })
   socket.write(
     `HTTP/1.1 ${String(status)} ${reason}\r\n` +

@@ -4,109 +4,520 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
-    <title>deepcode</title>
-    <!--
-      样式是**编译产物**（`pnpm css:build` 生成 static/styles.css）。
-      CSP 为 `style-src 'self'`，没有 `unsafe-inline`——所以这里既不能有
-      内联 style 标签，`app.js` 里也不能写 `element.style.*`，动态外观一律走 class。
-    -->
+    <meta name="theme-color" content="#f5f6f8" />
+    <title>deepcode · 工作台</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body class="h-screen bg-slate-950 text-slate-100 antialiased">
-    <!-- 登录：token 由终端打印，只显示一次。存在 sessionStorage 里，不落 URL。 -->
-    <section id="login" class="flex h-full items-center justify-center p-6">
-      <form
-        id="login-form"
-        class="w-full max-w-md space-y-4 rounded-xl border border-slate-800 bg-slate-900 p-6"
-      >
-        <h1 class="text-lg font-semibold">deepcode Web UI</h1>
-        <p class="text-sm text-slate-400">
-          在启动 Web UI 的终端里会打印一次访问 token。粘贴到这里即可登录； token 只保存在本标签页的
-          sessionStorage 中，不会出现在 URL 里。
-        </p>
-        <label for="token-input" class="text-sm text-slate-300">访问 token</label>
-        <input
-          id="token-input"
-          type="password"
-          autocomplete="off"
-          placeholder="访问 token"
-          class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-sky-500"
-        />
-        <p id="login-error" class="hidden text-sm text-rose-400"></p>
-        <button
-          type="submit"
-          class="w-full rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium hover:bg-sky-500"
-        >
-          登录
+  <body class="app-body">
+    <section id="login" class="login-screen">
+      <form id="login-form" class="login-card">
+        <div class="brand-mark" aria-hidden="true">D</div>
+        <p class="eyebrow">LOCAL AGENT WORKSPACE</p>
+        <h1>欢迎回到 deepcode</h1>
+        <p class="muted">输入启动 Web UI 时终端显示的访问 token。它仅保存在当前浏览器标签页。</p>
+        <label for="token-input">访问 token</label>
+        <input id="token-input" type="password" autocomplete="off" placeholder="粘贴访问 token" />
+        <p id="login-error" class="hidden form-error" role="alert"></p>
+        <button type="submit" class="button button-primary button-full">
+          进入工作台 <span aria-hidden="true">→</span>
         </button>
       </form>
     </section>
 
-    <!-- 主界面 -->
-    <main id="app" class="hidden h-full grid-cols-[16rem_1fr] md:grid">
-      <aside class="flex min-h-0 flex-col border-r border-slate-800 bg-slate-900">
-        <div class="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
-          <span class="text-sm font-semibold">会话</span>
-          <button
-            id="new-session"
-            class="rounded-md border border-slate-700 px-2 py-1 text-xs hover:bg-slate-800"
+    <main id="app" class="hidden app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <a class="brand" href="/projects" data-route
+          ><span class="brand-mark" aria-hidden="true">D</span
+          ><span>deepcode<small>WORKSPACE</small></span></a
+        >
+        <div class="sidebar-label">工作区</div>
+        <nav class="main-nav" aria-label="页面">
+          <a href="/projects" data-route data-nav="projects"
+            ><span aria-hidden="true">▦</span> 项目</a
           >
-            新建
-          </button>
+          <a href="/commands" data-route data-nav="commands"
+            ><span aria-hidden="true">⌘</span> 命令</a
+          >
+          <a href="/settings" data-route data-nav="settings" id="open-settings"
+            ><span aria-hidden="true">⚙</span> 设置</a
+          >
+        </nav>
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <span>当前项目</span
+            ><button id="open-project" type="button" class="text-button">打开文件夹</button>
+          </div>
+          <select id="project-select" aria-label="切换项目"></select>
+          <p id="project-path" class="project-path" title="项目路径"></p>
         </div>
-        <ul id="session-list" class="min-h-0 flex-1 overflow-y-auto p-2 text-sm"></ul>
-        <div class="border-t border-slate-800 px-3 py-2 text-xs text-slate-500">
-          <span id="connection-state" aria-live="polite">未连接</span>
+        <div class="sidebar-section sessions-section">
+          <div class="sidebar-section-head">
+            <span>最近对话</span
+            ><button
+              id="new-session"
+              type="button"
+              class="icon-button"
+              aria-label="新建对话"
+              title="新建对话"
+            >
+              ＋
+            </button>
+          </div>
+          <ul id="session-list" class="session-list"></ul>
+        </div>
+        <div class="sidebar-footer">
+          <span class="status-dot" aria-hidden="true"></span
+          ><span id="connection-state" aria-live="polite">未连接</span>
         </div>
       </aside>
 
-      <section class="flex min-h-0 flex-col">
-        <header class="flex items-center justify-between gap-2 border-b border-slate-800 px-4 py-2">
-          <div class="min-w-0">
-            <h2 id="session-title" class="truncate text-sm font-semibold">未选择会话</h2>
-            <p id="session-meta" class="truncate text-xs text-slate-500"></p>
+      <div class="workspace">
+        <header class="topbar">
+          <div class="breadcrumb">
+            <span>工作台</span><span aria-hidden="true">/</span
+            ><strong id="page-label">项目</strong>
           </div>
-          <button
-            id="cancel-turn"
-            class="hidden rounded-md border border-rose-700 px-2 py-1 text-xs text-rose-300 hover:bg-rose-950"
-          >
-            取消当前 turn
-          </button>
+          <div class="topbar-actions">
+            <span class="topbar-project" id="topbar-project"></span
+            ><button
+              id="theme-toggle"
+              type="button"
+              class="theme-toggle"
+              aria-label="切换到暗色模式"
+              aria-pressed="false"
+            >
+              <span class="theme-icon" aria-hidden="true">◐</span
+              ><span id="theme-label">暗色模式</span>
+            </button>
+          </div>
         </header>
+        <section id="projects-page" class="route-page page-scroll">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">YOUR WORKSPACES</p>
+              <h1>项目</h1>
+              <p class="muted">打开本机文件夹，继续 TUI 或 Web 中的对话。</p>
+            </div>
+            <button id="projects-open" type="button" class="button button-primary">
+              ＋ 打开项目文件夹
+            </button>
+          </div>
+          <div class="section-heading">
+            <h2>最近打开</h2>
+            <span id="project-count" class="count-pill">0 个项目</span>
+          </div>
+          <div id="project-card-list" class="project-grid"></div>
+        </section>
+        <section id="overview-page" class="route-page page-scroll hidden">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">PROJECT OVERVIEW</p>
+              <h1 id="project-overview-name">项目概览</h1>
+              <p id="project-overview-path" class="muted path-line"></p>
+            </div>
+            <button id="overview-new-session" type="button" class="button button-primary">
+              ＋ 新建对话
+            </button>
+          </div>
+          <div class="overview-stats">
+            <div class="stat-card">
+              <span>对话历史</span><strong id="project-overview-count">0</strong
+              ><small>TUI 和 Web 统一查看</small>
+            </div>
+            <div class="stat-card">
+              <span>存储位置</span><strong>~/.deepcode</strong><small>按项目集中存储</small>
+            </div>
+          </div>
+          <div class="section-heading">
+            <h2>对话历史</h2>
+            <span class="muted">选择一条对话继续</span>
+          </div>
+          <div id="overview-session-list" class="overview-session-list"></div>
+        </section>
+        <section id="chat-page" class="route-page chat-page hidden">
+          <header class="chat-header">
+            <div>
+              <a id="chat-back" href="/projects" data-route class="back-link">← 项目概览</a>
+              <h1 id="session-title">未选择会话</h1>
+              <p id="session-meta" class="muted"></p>
+            </div>
+            <button id="cancel-turn" type="button" class="button button-danger hidden">
+              取消当前 turn
+            </button>
+          </header>
+          <div
+            id="messages"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions text"
+            class="messages"
+          ></div>
+          <div
+            id="pending"
+            role="region"
+            aria-live="polite"
+            aria-label="待处理问题"
+            class="pending hidden"
+          ></div>
+          <div class="composer-area">
+            <div
+              id="command-menu"
+              role="listbox"
+              aria-label="Slash commands"
+              class="command-menu hidden"
+            ></div>
+            <form id="composer" class="composer">
+              <textarea
+                id="prompt"
+                rows="2"
+                placeholder="输入消息，或键入 / 使用命令…"
+                aria-controls="command-menu"
+                aria-autocomplete="list"
+              ></textarea
+              ><button id="send" type="submit" class="button button-primary">发送 ↑</button>
+            </form>
+            <p class="composer-hint">Enter 发送 · Shift + Enter 换行 · / 打开命令</p>
+          </div>
+        </section>
+        <section id="commands-page" class="route-page page-scroll hidden">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">COMMAND PALETTE</p>
+              <h1>命令</h1>
+              <p class="muted">在对话输入框中键入 /，也可以从这里查看所有可用命令。</p>
+            </div>
+          </div>
+          <label class="search-field"
+            ><span aria-hidden="true">⌕</span
+            ><input id="commands-search" type="search" placeholder="搜索命令、别名或说明"
+          /></label>
+          <div id="commands-list" class="commands-grid"></div>
+        </section>
+        <section id="settings-page" class="route-page page-scroll hidden">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">PREFERENCES</p>
+              <h1 id="settings-title">设置</h1>
+              <p class="muted">
+                管理供应商、模型、运行阈值和 MCP 服务。全局配置位于 ~/.deepcode/config.json。
+              </p>
+            </div>
+          </div>
+          <div class="settings-layout">
+            <nav class="settings-nav" aria-label="设置章节">
+              <a href="#providers">供应商与模型</a><a href="#tier-form">模型档位</a
+              ><a href="#language-form">偏好与阈值</a><a href="#mcp">MCP 服务</a>
+            </nav>
+            <div class="settings-content">
+              <p id="settings-status" role="status" class="hidden settings-status"></p>
 
-        <div
-          id="messages"
-          role="log"
-          aria-live="polite"
-          aria-relevant="additions text"
-          class="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm"
-        ></div>
-
-        <div
-          id="pending"
-          role="region"
-          aria-live="polite"
-          aria-label="待处理问题"
-          class="hidden border-t border-amber-800 bg-amber-950/40 p-3"
-        ></div>
-
-        <form id="composer" class="flex items-end gap-2 border-t border-slate-800 p-3">
-          <textarea
-            id="prompt"
-            rows="2"
-            placeholder="输入消息；以 / 开头则是 slash command。Enter 发送，Shift+Enter 换行。"
-            class="min-h-[2.5rem] flex-1 resize-y rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-sky-500"
-          ></textarea>
-          <button
-            id="send"
-            type="submit"
-            class="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700"
-          >
-            发送
-          </button>
-        </form>
-      </section>
+              <section id="providers" class="space-y-3">
+                <h3 class="font-semibold">供应商与模型</h3>
+                <div id="provider-list" class="space-y-2 text-sm"></div>
+              </section>
+              <form
+                id="provider-form"
+                class="grid gap-3 rounded-xl border border-slate-700 p-4 sm:grid-cols-2"
+              >
+                <h3 class="sm:col-span-2 font-semibold">添加供应商与模型</h3>
+                <label class="space-y-1 text-sm"
+                  >供应商名称<input
+                    name="name"
+                    required
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                /></label>
+                <label class="space-y-1 text-sm"
+                  >API 根地址<input
+                    name="baseUrl"
+                    type="url"
+                    required
+                    placeholder="https://api.example.com"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                /></label>
+                <label class="space-y-1 text-sm"
+                  >凭据来源<select
+                    name="apiKeySource"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  >
+                    <option value="env">环境变量</option>
+                    <option value="file">文件路径</option>
+                    <option value="keychain">Keychain</option>
+                  </select></label
+                >
+                <label class="space-y-1 text-sm"
+                  >凭据引用<input
+                    name="apiKeyKey"
+                    required
+                    placeholder="例如 ANTHROPIC_API_KEY"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                /></label>
+                <label class="space-y-1 text-sm"
+                  >模型 ID<input
+                    name="modelId"
+                    required
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                /></label>
+                <label class="space-y-1 text-sm"
+                  >上下文窗口<input
+                    name="contextWindow"
+                    type="number"
+                    min="1"
+                    value="200000"
+                    required
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                /></label>
+                <label class="space-y-1 text-sm"
+                  >最大输出 token<input
+                    name="maxOutputTokens"
+                    type="number"
+                    min="1"
+                    value="8192"
+                    required
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                /></label>
+                <label class="flex items-center gap-2 text-sm"
+                  ><input name="supportsTools" type="checkbox" checked /> 支持工具调用</label
+                >
+                <button
+                  type="submit"
+                  class="sm:col-span-2 rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium hover:bg-sky-500"
+                >
+                  添加
+                </button>
+              </form>
+              <form
+                id="model-form"
+                class="grid gap-3 rounded-xl border border-slate-700 p-4 sm:grid-cols-2"
+              >
+                <h3 class="sm:col-span-2 font-semibold">给现有供应商添加模型</h3>
+                <label class="space-y-1 text-sm"
+                  >供应商<select
+                    id="model-provider"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  ></select
+                ></label>
+                <label class="space-y-1 text-sm"
+                  >模型 ID<input
+                    name="modelId"
+                    required
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                /></label>
+                <label class="space-y-1 text-sm"
+                  >上下文窗口<input
+                    name="contextWindow"
+                    type="number"
+                    min="1"
+                    value="200000"
+                    required
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                /></label>
+                <label class="space-y-1 text-sm"
+                  >最大输出 token<input
+                    name="maxOutputTokens"
+                    type="number"
+                    min="1"
+                    value="8192"
+                    required
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                /></label>
+                <label class="flex items-center gap-2 text-sm"
+                  ><input name="supportsTools" type="checkbox" checked /> 支持工具调用</label
+                >
+                <button
+                  type="submit"
+                  class="sm:col-span-2 rounded-lg border border-sky-600 px-3 py-2 text-sm text-sky-200 hover:bg-sky-950"
+                >
+                  添加模型
+                </button>
+              </form>
+              <form
+                id="tier-form"
+                class="grid gap-3 rounded-xl border border-slate-700 p-4 sm:grid-cols-3"
+              >
+                <h3 class="sm:col-span-3 font-semibold">模型档位</h3>
+                <label class="space-y-1 text-sm"
+                  >档位<select
+                    id="tier-name"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  ></select
+                ></label>
+                <label class="space-y-1 text-sm sm:col-span-2"
+                  >使用模型<select
+                    id="tier-model"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  ></select
+                ></label>
+                <button
+                  type="submit"
+                  class="sm:col-span-3 rounded-lg border border-sky-600 px-3 py-2 text-sm text-sky-200 hover:bg-sky-950"
+                >
+                  保存档位
+                </button>
+              </form>
+              <form
+                id="language-form"
+                class="flex flex-wrap items-end gap-3 rounded-xl border border-slate-700 p-4"
+              >
+                <label class="space-y-1 text-sm"
+                  >TUI 语言<select
+                    id="settings-language"
+                    class="block rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  >
+                    <option value="zh">中文</option>
+                    <option value="en">English</option>
+                  </select></label
+                >
+                <button
+                  type="submit"
+                  class="rounded-lg border border-sky-600 px-3 py-2 text-sm text-sky-200 hover:bg-sky-950"
+                >
+                  保存语言
+                </button>
+              </form>
+              <form
+                id="policy-form"
+                class="grid gap-3 rounded-xl border border-slate-700 p-4 sm:grid-cols-[1fr_1fr_auto]"
+              >
+                <div class="sm:col-span-3">
+                  <h3 class="font-semibold">运行阈值</h3>
+                  <p class="text-xs text-slate-400">保存后重启 DeepCode 生效。</p>
+                </div>
+                <label class="space-y-1 text-sm"
+                  >设置项<select
+                    id="policy-key"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  ></select
+                ></label>
+                <label class="space-y-1 text-sm"
+                  >数值<input
+                    id="policy-value"
+                    type="number"
+                    min="0"
+                    required
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                /></label>
+                <button
+                  type="submit"
+                  class="rounded-lg border border-sky-600 px-3 py-2 text-sm text-sky-200 hover:bg-sky-950"
+                >
+                  保存
+                </button>
+              </form>
+              <section id="mcp" class="space-y-3">
+                <div>
+                  <h3 class="font-semibold">MCP 服务</h3>
+                  <p class="text-xs text-slate-400">更改后重启 DeepCode 生效。</p>
+                </div>
+                <div id="mcp-list" class="space-y-2 text-sm"></div>
+                <form
+                  id="mcp-form"
+                  class="grid gap-3 rounded-xl border border-slate-700 p-4 sm:grid-cols-2"
+                >
+                  <h4 class="sm:col-span-2 font-medium">添加 MCP 服务</h4>
+                  <label class="space-y-1 text-sm"
+                    >名称<input
+                      name="name"
+                      required
+                      pattern="[A-Za-z0-9._-]+"
+                      class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  /></label>
+                  <label class="space-y-1 text-sm"
+                    >传输方式<select
+                      name="transport"
+                      class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                    >
+                      <option value="stdio">stdio</option>
+                      <option value="streamable-http">streamable-http</option>
+                      <option value="sse">sse</option>
+                    </select></label
+                  >
+                  <label class="space-y-1 text-sm sm:col-span-2"
+                    >命令或 URL<input
+                      name="target"
+                      required
+                      placeholder="例如 npx 或 https://example.com/mcp"
+                      class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  /></label>
+                  <label class="space-y-1 text-sm sm:col-span-2"
+                    >stdio 参数（每行一个）<textarea
+                      name="args"
+                      rows="2"
+                      class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                    ></textarea>
+                  </label>
+                  <button
+                    type="submit"
+                    class="sm:col-span-2 rounded-lg border border-sky-600 px-3 py-2 text-sm text-sky-200 hover:bg-sky-950"
+                  >
+                    添加 MCP 服务
+                  </button>
+                </form>
+              </section>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
+    <div
+      id="project-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="project-modal-title"
+      class="fixed inset-0 z-20 hidden items-center justify-center bg-slate-950/85 p-4"
+    >
+      <div
+        class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-xl border border-slate-700 bg-slate-900 shadow-2xl"
+      >
+        <div class="flex items-center justify-between border-b border-slate-800 p-4">
+          <h2 id="project-modal-title" class="text-lg font-semibold">打开项目文件夹</h2>
+          <button
+            id="close-project"
+            type="button"
+            class="rounded-lg px-3 py-2 text-sm hover:bg-slate-800"
+          >
+            关闭
+          </button>
+        </div>
+        <div class="space-y-3 overflow-y-auto p-4">
+          <form id="directory-form" class="flex gap-2">
+            <label for="directory-path" class="sr-only">文件夹绝对路径</label>
+            <input
+              id="directory-path"
+              type="text"
+              placeholder="输入文件夹绝对路径"
+              class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-sky-400"
+            />
+            <button
+              type="submit"
+              class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800"
+            >
+              转到
+            </button>
+          </form>
+          <p id="directory-error" role="alert" class="hidden text-sm text-rose-300"></p>
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="directory-parent"
+              type="button"
+              class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800"
+            >
+              上一级
+            </button>
+            <button
+              id="select-directory"
+              type="button"
+              class="rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium hover:bg-sky-500"
+            >
+              打开当前文件夹
+            </button>
+          </div>
+          <ul
+            id="directory-list"
+            class="max-h-72 space-y-1 overflow-y-auto rounded-lg border border-slate-800 p-2 text-sm"
+          ></ul>
+        </div>
+      </div>
+    </div>
 
     <!-- 权限审批对话框 -->
     <div
@@ -153,9 +564,6 @@
       </div>
     </div>
 
-    <!--
-      原生 ESM，无 bundler。CSP 的 `script-src 'self'` 下外链脚本是唯一可行的形式。
-    -->
     <script type="module" src="/app.js"></script>
   </body>
 </html>

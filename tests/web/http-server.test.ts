@@ -567,6 +567,11 @@ describe('静态资源', () => {
     expect(css.headers.get('content-type')).toContain('text/css')
     expect(css.headers.get('cache-control')).toBe('no-cache')
 
+    const markdownParser = await fetch(`${h.baseUrl}/vendor/marked.js`)
+    expect(markdownParser.status).toBe(200)
+    expect(markdownParser.headers.get('content-type')).toContain('javascript')
+    expect(await markdownParser.text()).toContain('marked')
+
     const api = await h.fetch('/api/sessions')
     expect(api.headers.get('cache-control')).toBe('no-store')
   })
@@ -596,6 +601,25 @@ describe('静态资源', () => {
   it('不存在的静态文件 → 404', async () => {
     const h = await harness()
     expect((await fetch(`${h.baseUrl}/nope.js`)).status).toBe(404)
+  })
+
+  it('项目、对话、命令和设置路由可直接打开，未知路由仍返回 404', async () => {
+    const h = await harness()
+    const projectId = 'a'.repeat(24)
+    for (const path of [
+      '/projects',
+      `/projects/${projectId}`,
+      `/projects/${projectId}/chats/123e4567-e89b-12d3-a456-426614174000`,
+      '/commands',
+      '/settings',
+    ]) {
+      const response = await fetch(`${h.baseUrl}${path}`)
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toContain('text/html')
+      expect(await response.text()).toContain('id="app"')
+    }
+    expect((await fetch(`${h.baseUrl}/projects/not-an-id`)).status).toBe(404)
+    expect((await fetch(`${h.baseUrl}/projects/${projectId}/unknown`)).status).toBe(404)
   })
 
   it('HEAD 只回头不带体', async () => {

@@ -62,6 +62,14 @@ pnpm start -- --web-ui --listen local
 `public` 监听必须启用认证；写操作还要求
 `Origin` 校验和 `Idempotency-Key`。
 
+Web 工作台提供 `/projects` 项目列表、`/projects/:id` 项目概览、
+`/projects/:id/chats/:sessionId` 对话、`/commands` 命令目录和 `/settings` 配置页面；
+这些地址可直接打开或刷新。页面左侧可切换项目，也可通过「打开文件夹」浏览本机目录。
+同一项目的 TUI 与 Web 会话共用历史；对话输入框键入 `/` 会列出可用命令，支持方向键、
+Tab 和鼠标选择。历史消息和流式回复支持 Markdown（包括代码块、列表和表格）。
+右上角可切换浅色与暗色主题，选择保存在本机浏览器。
+设置页面可管理供应商、模型档位、MCP 服务、TUI 语言及运行阈值；MCP 和运行阈值更改在重启后生效。
+
 运行单个测试文件：
 
 ```bash
@@ -254,11 +262,13 @@ tests/          # 与 src 同构的测试
 
 ```
 ~/.deepcode/config.json              # 全局配置
-<workspace>/.deepcode/chat.json      # 每项目会话
+~/.deepcode/projects/<项目路径哈希>/chat.json  # 每项目会话
+~/.deepcode/projects/<项目路径哈希>/events/    # 每项目事件
+~/.deepcode/projects/<项目路径哈希>/project.json # 项目路径索引
 ```
 
-磁盘 JSON 的**字段名与语义**必须与旧项目逐字兼容（详见 `parts/01-data-layer.md`）——
-目录名不同，但文件内部结构相同。这样既保持本项目的独立身份，
-又能在需要时把旧数据整体搬到新目录后直接读取。
+项目 ID 由规范化绝对路径计算，同名目录不会混用历史。首次打开旧项目时，
+DeepCode 会把 `<workspace>/.deepcode/chat.json`、事件和观测日志复制到新目录；
+旧文件保留，新目录已有历史时不会覆盖。磁盘 JSON 的字段名与语义保持兼容。
 
 路径解析通过参数注入 `home` / `cwd`，不直接读取全局状态，以便测试。

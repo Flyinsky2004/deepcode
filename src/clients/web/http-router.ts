@@ -66,11 +66,20 @@ import {
   toTurnResultDto,
 } from './dto.js'
 import { serveStatic } from './static-files.js'
+import { applyConfigAction } from './config-actions.js'
 
 /** 命令执行桥：注册表 + 宿主。由 `server.ts` 装配，**永远存在**。 */
 export interface CommandBridge {
   readonly registry: CommandRegistry
   readonly host: CommandHost
+}
+
+export interface ProjectBridge {
+  list(): Promise<readonly { id: string; path: string; name: string; lastOpenedAt: string }[]>
+  open(path: string): Promise<{ id: string; path: string; name: string }>
+  browse(
+    path?: string,
+  ): Promise<{ path: string; parent: string | null; directories: readonly string[] }>
 }
 
 /** 路由运行所需的一切。由 `server.ts` 装配。 */
@@ -97,6 +106,8 @@ export interface WebContext {
    * 这两种完全不同的情况返回同一个响应，而排查方向截然相反。
    */
   readonly commands: CommandBridge
+  readonly projectId?: string
+  readonly projects?: ProjectBridge
 }
 
 /**
@@ -358,9 +369,49 @@ export class HttpRouter {
     const method = req.method ?? 'GET'
     const segments = url.pathname.split('/').filter((segment) => segment !== '')
 
+    if (url.pathname === '/api/projects' && method === 'GET' && this.#ctx.projects)
+      return sendJson(res, 200, { projects: await this.#ctx.projects.list() })
+    if (url.pathname === '/api/directories' && method === 'GET' && this.#ctx.projects)
+      return sendJson(
+        res,
+        200,
+        await this.#ctx.projects.browse(url.searchParams.get('path') ?? undefined),
+      )
+    if (url.pathname === '/api/projects/open' && method === 'POST' && this.#ctx.projects) {
+      const key = this.#requireIdempotencyKey(req, res)
+      if (key === undefined) return
+      const body = await this.#readJsonBody(req, res)
+      if (body === undefined) return
+      if (typeof body['path'] !== 'string' || body['path'].trim() === '')
+        return sendError(res, 400, ErrorCode.VALIDATION_FAILED, '项目路径不能为空')
+      return sendJson(res, 200, await this.#ctx.projects.open(body['path']))
+    }
+
+    const selected = headerValue(req.headers['x-deepcode-project'])
+    if (
+      selected !== undefined &&
+      this.#ctx.projectId !== undefined &&
+      selected !== this.#ctx.projectId
+    )
+      return sendError(res, 404, ErrorCode.SESSION_NOT_FOUND, '项目未打开')
+
     // /api/config
     if (method === 'GET' && url.pathname === '/api/config') {
       return sendJson(res, 200, toConfigDto(await this.#ctx.app.configStore.read()))
+    }
+    if (method === 'POST' && url.pathname === '/api/config') {
+      const key = this.#requireIdempotencyKey(req, res)
+      if (key === undefined) return
+      const body = await this.#readJsonBody(req, res)
+      if (body === undefined) return
+      return this.#withIdempotency(
+        res,
+        { principalId, routeKey: 'config', idempotencyKey: key, payload: body },
+        async () => {
+          await applyConfigAction(this.#ctx.app, body)
+          return { status: 200, body: toConfigDto(await this.#ctx.app.configStore.read()) }
+        },
+      )
     }
 
     // /api/pending
@@ -410,6 +461,19 @@ export class HttpRouter {
     }
 
     // /api/commands
+    if (method === 'GET' && url.pathname === '/api/commands')
+      return sendJson(res, 200, {
+        commands: this.#ctx.commands.registry.list().map((definition) => ({
+          name: definition.name,
+          aliases: definition.aliases ?? [],
+          description: definition.description,
+          parameters: definition.parameters.positionals.map((item) => ({
+            name: item.name,
+            required: item.required,
+            description: item.description,
+          })),
+        })),
+      })
     if (method === 'POST' && url.pathname === '/api/commands')
       return this.#handleCommand(req, res, principalId)
 

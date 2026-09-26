@@ -107,8 +107,9 @@ pnpm vitest run -t "子代理使用 subagent_turn_ 前缀"
 - **权限双写同步**：执行层的模式权限表与 prompt 层的模式描述必须一致，否则模型会尝试被拒绝的操作。
 - **阈值常量原样保留**：超时、截断长度、重试次数、token 预算等，并且不得硬编码在局部——按 `parts/09` §3 收进配置，在父子代理之间显式传递与扣减。
 - **磁盘 JSON 字段名与语义必须与旧项目兼容**。数据目录为本项目自有路径
-  （`~/.deepcode/config.json`、`<workspace>/.deepcode/chat.json`），
-  与旧项目的 `~/.flyinchat/` **不同**——目录名是新的，文件内部结构逐字兼容。
+  （`~/.deepcode/config.json`、`~/.deepcode/projects/<项目路径哈希>/chat.json`）；
+  旧版 `<workspace>/.deepcode` 首次打开时只复制、不删除。数据目录不复用旧项目的
+  `~/.flyinchat/`，文件内部结构保持兼容。
 - **不可变数据**：状态更新 = 构造新对象，绝不原地修改；**原子写**：临时文件 + rename。
 - **工具串行执行**：同一轮的多个 tool call 顺序 await，不并发。
 - **子代理权限是交集**：`childPermission = parentPermission ∩ definitionPermission ∩ runtimePolicy`，且 `sub_agent` 永远从子注册表剔除——委派不能提升权限，子代理不能递归。

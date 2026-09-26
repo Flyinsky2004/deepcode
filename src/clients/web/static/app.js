@@ -1,3 +1,5 @@
+import { marked } from '/vendor/marked.js'
+
 /**
  * deepcode Web UI 前端。
  *
@@ -18,9 +20,25 @@
 
 const TOKEN_KEY = 'deepcode.token'
 const PENDING_KEY_PREFIX = 'deepcode.pending.'
+const PROJECT_KEY = 'deepcode.project.path'
+const THEME_KEY = 'deepcode.theme'
+
+const initialTheme = localStorage.getItem(THEME_KEY)
+document.documentElement.dataset.theme =
+  initialTheme === 'light' || initialTheme === 'dark'
+    ? initialTheme
+    : window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light'
 
 const state = {
   token: sessionStorage.getItem(TOKEN_KEY) ?? '',
+  projectId: null,
+  projectPath: null,
+  projects: [],
+  commands: [],
+  commandMatches: [],
+  commandIndex: -1,
   sessions: [],
   sessionId: null,
   lastEventId: null,
@@ -36,9 +54,130 @@ const state = {
   liveText: null,
   /** 权限对话框当前展示的 requestId。 */
   approvalRequestId: null,
+  routeGeneration: 0,
 }
 
 const el = (id) => document.getElementById(id)
+
+// marked 负责 Markdown 语法；渲染时只重建允许的 DOM 节点，不把模型输出直接
+// 放进页面的 innerHTML。原始 HTML、事件属性、危险链接和图片请求都不能进入页面。
+const MARKDOWN_TAGS = new Set([
+  'p',
+  'br',
+  'strong',
+  'em',
+  'del',
+  'code',
+  'pre',
+  'blockquote',
+  'ul',
+  'ol',
+  'li',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'table',
+  'thead',
+  'tbody',
+  'tr',
+  'th',
+  'td',
+  'a',
+  'input',
+  'sup',
+  'sub',
+])
+const DROP_MARKDOWN_TAGS = new Set([
+  'script',
+  'style',
+  'iframe',
+  'object',
+  'embed',
+  'svg',
+  'math',
+  'form',
+  'template',
+])
+
+function safeMarkdownHref(value) {
+  try {
+    const url = new window.URL(value, location.href)
+    return ['http:', 'https:', 'mailto:'].includes(url.protocol) ? url.href : null
+  } catch {
+    return null
+  }
+}
+
+function copySafeMarkdownNode(parent, source) {
+  if (source.nodeType === window.Node.TEXT_NODE) {
+    parent.append(document.createTextNode(source.textContent ?? ''))
+    return
+  }
+  if (source.nodeType !== window.Node.ELEMENT_NODE) return
+  const tag = source.localName
+  if (DROP_MARKDOWN_TAGS.has(tag)) return
+  if (tag === 'img') {
+    parent.append(document.createTextNode(source.getAttribute('alt') ?? '[图片]'))
+    return
+  }
+  if (!MARKDOWN_TAGS.has(tag)) {
+    for (const child of source.childNodes) copySafeMarkdownNode(parent, child)
+    return
+  }
+  if (tag === 'input' && source.getAttribute('type') !== 'checkbox') return
+  const clean = document.createElement(tag)
+  if (tag === 'a') {
+    const href = safeMarkdownHref(source.getAttribute('href') ?? '')
+    if (href) {
+      clean.setAttribute('href', href)
+      clean.setAttribute('target', '_blank')
+      clean.setAttribute('rel', 'noopener noreferrer')
+    }
+  }
+  if (tag === 'code') {
+    const language = source.className.match(/^language-([a-zA-Z0-9_+#.-]+)$/)?.[1]
+    if (language) clean.className = `language-${language}`
+  }
+  if (tag === 'ol' && /^\d+$/.test(source.getAttribute('start') ?? ''))
+    clean.setAttribute('start', source.getAttribute('start'))
+  if (tag === 'input') {
+    clean.setAttribute('type', 'checkbox')
+    clean.disabled = true
+    clean.checked = source.hasAttribute('checked')
+  }
+  for (const child of source.childNodes) copySafeMarkdownNode(clean, child)
+  parent.append(clean)
+}
+
+function renderMarkdown(node, source) {
+  try {
+    const html = marked.parse(source, { gfm: true, breaks: true })
+    const documentTree = new window.DOMParser().parseFromString(html, 'text/html')
+    const fragment = document.createDocumentFragment()
+    for (const child of documentTree.body.childNodes) copySafeMarkdownNode(fragment, child)
+    node.replaceChildren(fragment)
+  } catch {
+    node.textContent = source
+  }
+}
+
+function updateThemeButton() {
+  const dark = document.documentElement.dataset.theme === 'dark'
+  el('theme-toggle').setAttribute('aria-pressed', String(dark))
+  el('theme-toggle').setAttribute('aria-label', dark ? '切换到浅色模式' : '切换到暗色模式')
+  el('theme-label').textContent = dark ? '浅色模式' : '暗色模式'
+}
+updateThemeButton()
+el('theme-toggle').addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
+  document.documentElement.dataset.theme = next
+  localStorage.setItem(THEME_KEY, next)
+  updateThemeButton()
+})
 
 // ── HTTP ──────────────────────────────────────────────────────────
 
@@ -50,6 +189,7 @@ const el = (id) => document.getElementById(id)
  */
 async function api(path, { method = 'GET', body, idempotencyKey } = {}) {
   const headers = { Authorization: `Bearer ${state.token}` }
+  if (state.projectId !== null) headers['X-Deepcode-Project'] = state.projectId
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
 
@@ -95,6 +235,7 @@ function logout(message) {
   state.socket = null
   el('login').classList.remove('hidden')
   el('app').classList.add('hidden')
+  el('app').classList.remove('flex')
   if (message) showError(el('login-error'), message)
 }
 
@@ -116,26 +257,581 @@ el('login-form').addEventListener('submit', (event) => {
 el('new-session').addEventListener('click', () => {
   void createSession()
 })
+el('overview-new-session').addEventListener('click', () => void createSession())
 
 // ── 会话 ─────────────────────────────────────────────────────────
 
 async function enterApp() {
   try {
-    await refreshSessions()
+    await refreshProjects()
+    const preferred = localStorage.getItem(PROJECT_KEY)
+    const project = state.projects.find((item) => item.path === preferred) ?? state.projects[0]
+    if (project === undefined) throw new Error('没有可打开的项目')
+    await switchProject(project)
   } catch (error) {
     if (error.message !== 'unauthorized') showError(el('login-error'), error.message)
     return
   }
   el('login').classList.add('hidden')
   el('app').classList.remove('hidden')
-  if (state.sessions.length === 0) await createSession()
-  else await selectSession(state.sessions[0].id)
+  await renderRoute().catch(showRouteError)
 }
+
+async function refreshProjects() {
+  const payload = await api('/api/projects')
+  state.projects = payload.projects ?? []
+  const select = el('project-select')
+  select.replaceChildren()
+  for (const project of state.projects) {
+    const option = document.createElement('option')
+    option.value = project.path
+    option.textContent = project.name
+    select.append(option)
+  }
+  if (state.projectPath !== null) select.value = state.projectPath
+  renderProjects()
+}
+
+async function switchProject(project) {
+  const opened = await api('/api/projects/open', {
+    method: 'POST',
+    body: { path: project.path },
+    idempotencyKey: crypto.randomUUID(),
+  })
+  state.connectionGeneration += 1
+  state.socket?.close()
+  state.socket = null
+  state.projectId = opened.id
+  state.projectPath = opened.path
+  state.sessionId = null
+  state.lastEventId = null
+  state.turnId = null
+  state.running.clear()
+  state.liveText = null
+  localStorage.setItem(PROJECT_KEY, opened.path)
+  el('project-path').textContent = opened.path
+  el('project-path').title = opened.path
+  el('project-select').value = opened.path
+  el('topbar-project').textContent = project.name ?? opened.path.split('/').filter(Boolean).at(-1)
+  el('messages').replaceChildren()
+  el('session-title').textContent = '未选择会话'
+  el('session-meta').textContent = ''
+  await refreshSessions()
+  const commands = await api('/api/commands')
+  state.commands = commands.commands ?? []
+  hideCommandMenu()
+  renderOverview()
+  renderCommands()
+}
+
+el('project-select').addEventListener('change', (event) => {
+  const project = state.projects.find((item) => item.path === event.target.value)
+  if (project)
+    void switchProject(project)
+      .then(() => navigate(`/projects/${state.projectId}`))
+      .catch((error) => appendNote(`打开项目失败：${error.message}`, true))
+})
+
+function routeFromPath(pathname) {
+  const parts = pathname.split('/').filter(Boolean)
+  if (parts.length === 0 || (parts.length === 1 && parts[0] === 'projects'))
+    return { page: 'projects' }
+  if (parts.length === 1 && ['settings', 'commands'].includes(parts[0])) return { page: parts[0] }
+  if (parts[0] === 'projects' && /^[a-f0-9]{24}$/.test(parts[1] ?? '')) {
+    if (parts.length === 2) return { page: 'overview', projectId: parts[1] }
+    if (parts.length === 4 && parts[2] === 'chats' && /^[A-Za-z0-9_-]+$/.test(parts[3]))
+      return { page: 'chat', projectId: parts[1], sessionId: parts[3] }
+  }
+  return { page: 'projects' }
+}
+
+function chatPath(sessionId) {
+  return `/projects/${state.projectId}/chats/${encodeURIComponent(sessionId)}`
+}
+
+function navigate(path, replace = false) {
+  if (location.pathname !== path)
+    window.history[replace ? 'replaceState' : 'pushState']({}, '', path)
+  void renderRoute().catch((error) => showRouteError(error))
+}
+
+function showRouteError(error) {
+  const page = document.querySelector('.route-page:not(.hidden)')
+  if (page?.id === 'chat-page') appendNote(`页面加载失败：${error.message}`, true)
+  else if (page?.id === 'settings-page') settingsStatus(`设置加载失败：${error.message}`, true)
+  else if (page) {
+    const note = document.createElement('p')
+    note.className = 'empty-state'
+    note.textContent = `页面加载失败：${error.message}`
+    page.append(note)
+  }
+}
+
+async function renderRoute() {
+  const generation = ++state.routeGeneration
+  const route = routeFromPath(location.pathname)
+  if (location.pathname === '/') {
+    window.history.replaceState({}, '', '/projects')
+  } else if (route.page === 'projects' && location.pathname !== '/projects') {
+    window.history.replaceState({}, '', '/projects')
+  }
+  if (route.projectId && route.projectId !== state.projectId) {
+    const project = state.projects.find((item) => item.id === route.projectId)
+    if (!project) {
+      navigate('/projects', true)
+      return
+    }
+    await switchProject(project)
+    if (generation !== state.routeGeneration) return
+  }
+  if (route.page !== 'chat') {
+    state.connectionGeneration += 1
+    state.socket?.close()
+    state.socket = null
+    state.sessionId = null
+    setConnectionState('未连接')
+    renderSessions()
+  }
+  for (const page of ['projects', 'overview', 'chat', 'commands', 'settings'])
+    el(`${page}-page`).classList.toggle('hidden', page !== route.page)
+  for (const link of document.querySelectorAll('[data-nav]')) {
+    const active =
+      link.dataset.nav ===
+      (route.page === 'overview' || route.page === 'chat' ? 'projects' : route.page)
+    if (active) link.setAttribute('aria-current', 'page')
+    else link.removeAttribute('aria-current')
+  }
+  const labels = {
+    projects: '项目',
+    overview: '项目概览',
+    chat: '对话',
+    commands: '命令',
+    settings: '设置',
+  }
+  el('page-label').textContent = labels[route.page]
+  document.title = `${labels[route.page]} · deepcode`
+  if (route.page === 'projects') renderProjects()
+  if (route.page === 'overview') renderOverview()
+  if (route.page === 'commands') renderCommands()
+  if (route.page === 'settings') {
+    el('settings-status').classList.add('hidden')
+    await loadSettings()
+  }
+  if (route.page === 'chat') {
+    if (!state.sessions.some((item) => item.id === route.sessionId)) {
+      navigate(`/projects/${state.projectId}`, true)
+      return
+    }
+    el('chat-back').href = `/projects/${state.projectId}`
+    await selectSession(route.sessionId)
+  }
+}
+
+document.addEventListener('click', (event) => {
+  const anchor = event.target.closest('a[data-route]')
+  if (!anchor || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  navigate(anchor.pathname)
+})
+window.addEventListener('popstate', () => void renderRoute().catch(showRouteError))
+
+function renderProjects() {
+  const list = el('project-card-list')
+  list.replaceChildren()
+  el('project-count').textContent = `${state.projects.length} 个项目`
+  if (state.projects.length === 0) {
+    const empty = document.createElement('p')
+    empty.className = 'empty-state'
+    empty.textContent = '还没有项目。打开一个本机文件夹开始。'
+    list.append(empty)
+  }
+  for (const project of state.projects) {
+    const card = document.createElement('button')
+    card.type = 'button'
+    card.className = 'project-card'
+    const icon = document.createElement('span')
+    icon.className = 'project-card-icon'
+    icon.textContent = '⌁'
+    const name = document.createElement('strong')
+    name.textContent = project.name
+    const path = document.createElement('small')
+    path.textContent = project.path
+    card.append(icon, name, path)
+    card.addEventListener('click', () => navigate(`/projects/${project.id}`))
+    list.append(card)
+  }
+}
+
+function renderOverview() {
+  const project = state.projects.find((item) => item.id === state.projectId)
+  el('project-overview-name').textContent = project?.name ?? '项目概览'
+  el('project-overview-path').textContent = state.projectPath ?? ''
+  el('project-overview-count').textContent = String(state.sessions.length)
+  const list = el('overview-session-list')
+  list.replaceChildren()
+  if (state.sessions.length === 0) {
+    const empty = document.createElement('p')
+    empty.className = 'empty-state'
+    empty.textContent = '这个项目还没有对话。新建对话后会显示在这里。'
+    list.append(empty)
+  }
+  for (const session of state.sessions) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'overview-session'
+    const body = document.createElement('span')
+    const title = document.createElement('strong')
+    title.textContent = session.title || session.id
+    const meta = document.createElement('small')
+    meta.textContent = `${session.currentTurn ?? 0} 轮 · ${session.status ?? '已保存'}`
+    body.append(title, meta)
+    const arrow = document.createElement('span')
+    arrow.className = 'arrow'
+    arrow.textContent = '→'
+    button.append(body, arrow)
+    button.addEventListener('click', () => navigate(chatPath(session.id)))
+    list.append(button)
+  }
+}
+
+function renderCommands() {
+  const query = el('commands-search').value.trim().toLowerCase()
+  const list = el('commands-list')
+  list.replaceChildren()
+  const commands = state.commands.filter((command) =>
+    [command.name, command.description, ...(command.aliases ?? [])]
+      .join(' ')
+      .toLowerCase()
+      .includes(query),
+  )
+  if (commands.length === 0) {
+    const empty = document.createElement('p')
+    empty.className = 'empty-state'
+    empty.textContent = state.commands.length === 0 ? '当前没有可用命令。' : '没有匹配的命令。'
+    list.append(empty)
+  }
+  for (const command of commands) {
+    const card = document.createElement('button')
+    card.type = 'button'
+    card.className = 'command-card'
+    const name = document.createElement('code')
+    name.textContent = `/${command.name}`
+    const description = document.createElement('span')
+    description.textContent = command.description
+    card.append(name, description)
+    card.addEventListener('click', async () => {
+      if (state.sessions.length === 0) await createSession()
+      else navigate(chatPath(state.sessions[0].id))
+      chooseCommand(command)
+    })
+    list.append(card)
+  }
+}
+el('commands-search').addEventListener('input', renderCommands)
+
+function toggleDialog(id, open) {
+  el(id).classList.toggle('hidden', !open)
+  el(id).classList.toggle('flex', open)
+}
+
+el('open-project').addEventListener('click', () => {
+  toggleDialog('project-modal', true)
+  void browseDirectory(state.projectPath).then(() => el('directory-path').focus())
+})
+el('projects-open').addEventListener('click', () => el('open-project').click())
+el('close-project').addEventListener('click', () => toggleDialog('project-modal', false))
+
+async function browseDirectory(path) {
+  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+  try {
+    const payload = await api(`/api/directories${query}`)
+    el('directory-error').classList.add('hidden')
+    el('directory-path').value = payload.path
+    el('directory-parent').disabled = payload.parent === null
+    el('directory-parent').dataset.path = payload.parent ?? ''
+    const list = el('directory-list')
+    list.replaceChildren()
+    for (const name of payload.directories ?? []) {
+      const item = document.createElement('li')
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'command-option'
+      button.textContent = name
+      button.addEventListener(
+        'click',
+        () => void browseDirectory(`${payload.path.replace(/\/$/, '')}/${name}`),
+      )
+      item.append(button)
+      list.append(item)
+    }
+  } catch (error) {
+    showError(el('directory-error'), error.message)
+  }
+}
+
+el('directory-form').addEventListener('submit', (event) => {
+  event.preventDefault()
+  void browseDirectory(el('directory-path').value.trim())
+})
+el('directory-parent').addEventListener('click', () => {
+  void browseDirectory(el('directory-parent').dataset.path)
+})
+el('select-directory').addEventListener('click', () => {
+  const path = el('directory-path').value.trim()
+  void switchProject({ path })
+    .then(async () => {
+      toggleDialog('project-modal', false)
+      await refreshProjects()
+      navigate(`/projects/${state.projectId}`)
+    })
+    .catch((error) => showError(el('directory-error'), error.message))
+})
+
+// ── 配置管理 ──────────────────────────────────────────────────────
+
+let settingsConfig = null
+
+function settingsStatus(message, error = false) {
+  const node = el('settings-status')
+  node.textContent = message
+  node.classList.remove('hidden')
+  node.classList.toggle('text-rose-300', error)
+  node.classList.toggle('text-emerald-300', !error)
+}
+
+async function loadSettings() {
+  settingsConfig = await api('/api/config')
+  const config = settingsConfig
+  const list = el('provider-list')
+  list.replaceChildren()
+  if (config.providers.length === 0) {
+    const empty = document.createElement('p')
+    empty.className = 'text-slate-400'
+    empty.textContent = '尚未添加供应商。'
+    list.append(empty)
+  }
+  for (const provider of config.providers) {
+    const card = document.createElement('div')
+    card.className = 'rounded-lg border border-slate-700 p-3'
+    const title = document.createElement('p')
+    title.className = 'font-medium'
+    title.textContent = `${provider.name} · ${provider.enabled ? '已启用' : '已停用'}`
+    const detail = document.createElement('p')
+    detail.className = 'break-all text-xs text-slate-400'
+    detail.textContent = provider.baseUrl
+    const models = document.createElement('p')
+    models.className = 'mt-2 text-xs text-slate-300'
+    models.textContent =
+      config.models
+        .filter((model) => model.providerId === provider.id)
+        .map((model) => model.id)
+        .join('、') || '暂无模型'
+    const toggle = document.createElement('button')
+    toggle.type = 'button'
+    toggle.className =
+      'mt-2 rounded-lg border border-slate-600 px-3 py-2 text-xs hover:bg-slate-800'
+    toggle.textContent = provider.enabled ? '停用供应商' : '启用供应商'
+    toggle.addEventListener(
+      'click',
+      () =>
+        void saveSettings(
+          {
+            action: 'provider_toggle',
+            id: provider.id,
+            enabled: !provider.enabled,
+          },
+          '供应商状态已保存。',
+        ),
+    )
+    card.append(title, detail, models, toggle)
+    list.append(card)
+  }
+
+  const modelProvider = el('model-provider')
+  modelProvider.replaceChildren()
+  for (const provider of config.providers) {
+    const option = document.createElement('option')
+    option.value = provider.id
+    option.textContent = provider.name
+    modelProvider.append(option)
+  }
+
+  const tierSelect = el('tier-name')
+  tierSelect.replaceChildren()
+  for (const tier of config.availableTiers) {
+    const option = document.createElement('option')
+    option.value = tier
+    option.textContent = tier
+    tierSelect.append(option)
+  }
+  const modelSelect = el('tier-model')
+  modelSelect.replaceChildren()
+  for (const model of config.models.filter(
+    (item) =>
+      item.enabled &&
+      config.providers.some((provider) => provider.id === item.providerId && provider.enabled),
+  )) {
+    const provider = config.providers.find((item) => item.id === model.providerId)
+    const option = document.createElement('option')
+    option.value = `${model.providerId}/${model.id}`
+    option.textContent = `${provider?.name ?? model.providerId}/${model.id}`
+    modelSelect.append(option)
+  }
+  const selectedTier = config.tiers.find((item) => item.tier === tierSelect.value)
+  if (selectedTier) modelSelect.value = `${selectedTier.providerId}/${selectedTier.modelId}`
+  el('settings-language').value = config.language
+  const policySelect = el('policy-key')
+  policySelect.replaceChildren()
+  for (const key of config.policySettingKeys) {
+    const option = document.createElement('option')
+    option.value = key
+    option.textContent = key
+    policySelect.append(option)
+  }
+  el('policy-value').value = config.policySettings[`policy.${policySelect.value}`] ?? ''
+  const mcpList = el('mcp-list')
+  mcpList.replaceChildren()
+  if (config.mcpServers.length === 0) {
+    const empty = document.createElement('p')
+    empty.className = 'text-slate-400'
+    empty.textContent = '尚未配置 MCP 服务。'
+    mcpList.append(empty)
+  }
+  for (const server of config.mcpServers) {
+    const row = document.createElement('div')
+    row.className = 'flex items-center justify-between gap-2 rounded-lg border border-slate-700 p-3'
+    const label = document.createElement('span')
+    label.textContent = `${server.name} · ${server.transport} · ${server.enabled ? '已启用' : '已停用'}`
+    const toggle = document.createElement('button')
+    toggle.type = 'button'
+    toggle.className =
+      'shrink-0 rounded-lg border border-slate-600 px-3 py-2 text-xs hover:bg-slate-800'
+    toggle.textContent = server.enabled ? '停用' : '启用'
+    toggle.addEventListener(
+      'click',
+      () =>
+        void saveSettings(
+          {
+            action: 'mcp_toggle',
+            name: server.name,
+            enabled: !server.enabled,
+          },
+          'MCP 设置已保存，重启 DeepCode 后生效。',
+        ),
+    )
+    row.append(label, toggle)
+    mcpList.append(row)
+  }
+}
+
+async function saveSettings(body, success) {
+  try {
+    settingsConfig = await api('/api/config', {
+      method: 'POST',
+      body,
+      idempotencyKey: crypto.randomUUID(),
+    })
+    await loadSettings()
+    settingsStatus(success)
+  } catch (error) {
+    settingsStatus(error.message, true)
+  }
+}
+
+el('tier-name').addEventListener('change', () => {
+  const tier = settingsConfig?.tiers.find((item) => item.tier === el('tier-name').value)
+  if (tier) el('tier-model').value = `${tier.providerId}/${tier.modelId}`
+})
+el('policy-key').addEventListener('change', () => {
+  el('policy-value').value =
+    settingsConfig?.policySettings[`policy.${el('policy-key').value}`] ?? ''
+})
+
+el('provider-form').addEventListener('submit', (event) => {
+  event.preventDefault()
+  const form = new globalThis.FormData(event.currentTarget)
+  void saveSettings(
+    {
+      action: 'provider_add',
+      name: form.get('name'),
+      baseUrl: form.get('baseUrl'),
+      apiKeySource: form.get('apiKeySource'),
+      apiKeyKey: form.get('apiKeyKey'),
+      modelId: form.get('modelId'),
+      contextWindow: Number(form.get('contextWindow')),
+      maxOutputTokens: Number(form.get('maxOutputTokens')),
+      supportsTools: form.has('supportsTools'),
+    },
+    '供应商与模型已添加。',
+  )
+})
+el('model-form').addEventListener('submit', (event) => {
+  event.preventDefault()
+  const form = new globalThis.FormData(event.currentTarget)
+  void saveSettings(
+    {
+      action: 'model_add',
+      providerId: el('model-provider').value,
+      modelId: form.get('modelId'),
+      contextWindow: Number(form.get('contextWindow')),
+      maxOutputTokens: Number(form.get('maxOutputTokens')),
+      supportsTools: form.has('supportsTools'),
+    },
+    '模型已添加。',
+  )
+})
+el('tier-form').addEventListener('submit', (event) => {
+  event.preventDefault()
+  const value = el('tier-model').value
+  const model = settingsConfig?.models.find((item) => `${item.providerId}/${item.id}` === value)
+  if (!model) return settingsStatus('请选择模型。', true)
+  void saveSettings(
+    {
+      action: 'tier_set',
+      tier: el('tier-name').value,
+      providerId: model.providerId,
+      modelId: model.id,
+    },
+    '模型档位已保存。',
+  )
+})
+el('language-form').addEventListener('submit', (event) => {
+  event.preventDefault()
+  void saveSettings(
+    { action: 'language', language: el('settings-language').value },
+    '语言设置已保存。',
+  )
+})
+el('policy-form').addEventListener('submit', (event) => {
+  event.preventDefault()
+  void saveSettings(
+    { action: 'policy_set', key: el('policy-key').value, value: el('policy-value').value },
+    '运行阈值已保存，重启 DeepCode 后生效。',
+  )
+})
+el('mcp-form').addEventListener('submit', (event) => {
+  event.preventDefault()
+  const form = new globalThis.FormData(event.currentTarget)
+  void saveSettings(
+    {
+      action: 'mcp_add',
+      name: form.get('name'),
+      transport: form.get('transport'),
+      target: form.get('target'),
+      args: String(form.get('args') ?? '')
+        .split('\n')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    },
+    'MCP 服务已添加，重启 DeepCode 后生效。',
+  )
+})
 
 async function refreshSessions() {
   const payload = await api('/api/sessions')
   state.sessions = payload.sessions ?? []
   renderSessions()
+  renderOverview()
 }
 
 function renderSessions() {
@@ -145,12 +841,10 @@ function renderSessions() {
     const item = document.createElement('li')
     const button = document.createElement('button')
     button.type = 'button'
-    button.className =
-      'w-full truncate rounded-md px-2 py-1 text-left hover:bg-slate-800 ' +
-      (session.id === state.sessionId ? 'bg-slate-800 text-sky-300' : 'text-slate-300')
+    button.className = `session-link${session.id === state.sessionId ? ' active' : ''}`
     button.textContent = session.title || session.id
     button.addEventListener('click', () => {
-      void selectSession(session.id)
+      navigate(chatPath(session.id))
     })
     item.append(button)
     list.append(item)
@@ -164,7 +858,7 @@ async function createSession() {
     idempotencyKey: crypto.randomUUID(),
   })
   await refreshSessions()
-  await selectSession(payload.sessionId)
+  navigate(chatPath(payload.sessionId))
 }
 
 async function selectSession(sessionId) {
@@ -178,20 +872,26 @@ async function selectSession(sessionId) {
     state.lastEventId = null
   }
   state.sessionId = sessionId
+  const projectId = state.projectId
   const session = state.sessions.find((item) => item.id === sessionId)
   el('session-title').textContent = session?.title ?? sessionId
   el('session-meta').textContent = `turn ${session?.currentTurn ?? 0} · ${session?.status ?? ''}`
   renderSessions()
 
   await loadHistory()
+  if (state.sessionId !== sessionId || state.projectId !== projectId) return
   await refreshPending()
+  if (state.sessionId !== sessionId || state.projectId !== projectId) return
   connect()
 }
 
 /** 从消息历史重建视图。这是 `resync_required` 之后必须走的路。 */
 async function loadHistory() {
   if (state.sessionId === null) return
-  const payload = await api(`/api/sessions/${state.sessionId}/messages`)
+  const sessionId = state.sessionId
+  const projectId = state.projectId
+  const payload = await api(`/api/sessions/${sessionId}/messages`)
+  if (state.sessionId !== sessionId || state.projectId !== projectId) return
   const container = el('messages')
   container.replaceChildren()
   state.liveText = null
@@ -202,26 +902,28 @@ async function loadHistory() {
 function renderMessage(message) {
   const container = el('messages')
   const wrap = document.createElement('div')
+  const bodyMarkdown = message.displayMarkdown ?? message.content
+  if (bodyMarkdown === '') return
 
   if (message.role === 'user') {
-    wrap.className = 'flex justify-end'
+    wrap.className = 'message-user'
     const bubble = document.createElement('div')
-    bubble.className = 'max-w-[85%] whitespace-pre-wrap rounded-lg bg-sky-900/60 px-3 py-2'
-    bubble.textContent = message.content
+    bubble.className = 'message-user-bubble markdown-body'
+    renderMarkdown(bubble, bodyMarkdown)
     wrap.append(bubble)
   } else if (message.role === 'assistant') {
-    wrap.className = 'whitespace-pre-wrap text-slate-200'
-    wrap.textContent = message.content
+    wrap.className = 'message-assistant markdown-body'
+    renderMarkdown(wrap, bodyMarkdown)
     wrap.dataset.turnId = message.turnId ?? ''
   } else {
     // tool / system：审计类内容，弱化展示。
-    wrap.className = 'rounded-md bg-slate-900 px-3 py-2 text-xs text-slate-400'
+    wrap.className = 'message-system'
     const label = document.createElement('span')
-    label.className = 'mr-2 text-slate-500'
+    label.className = 'message-label'
     label.textContent = `[${message.subtype}]`
-    const body = document.createElement('span')
-    body.className = 'break-all'
-    body.textContent = message.content
+    const body = document.createElement('div')
+    body.className = 'markdown-body'
+    renderMarkdown(body, bodyMarkdown)
     wrap.append(label, body)
   }
 
@@ -231,14 +933,101 @@ function renderMessage(message) {
 
 // ── 提交 ──────────────────────────────────────────────────────────
 
+function hideCommandMenu() {
+  state.commandMatches = []
+  state.commandIndex = -1
+  el('command-menu').classList.add('hidden')
+  el('prompt').setAttribute('aria-expanded', 'false')
+  el('prompt').removeAttribute('aria-activedescendant')
+}
+
+function showCommandMenu() {
+  const value = el('prompt').value
+  if (!value.startsWith('/') || /\s/.test(value.slice(1))) {
+    hideCommandMenu()
+    return
+  }
+  const query = value.slice(1).toLowerCase()
+  state.commandMatches = state.commands
+    .filter(
+      (item) =>
+        item.name.toLowerCase().startsWith(query) ||
+        item.aliases?.some((alias) => alias.toLowerCase().startsWith(query)),
+    )
+    .slice(0, 12)
+  state.commandIndex = state.commandMatches.some((item) => item.name.toLowerCase() === query)
+    ? -1
+    : 0
+  renderCommandMenu()
+}
+
+function renderCommandMenu() {
+  const menu = el('command-menu')
+  menu.replaceChildren()
+  menu.classList.toggle('hidden', state.commandMatches.length === 0)
+  el('prompt').setAttribute('aria-expanded', state.commandMatches.length > 0 ? 'true' : 'false')
+  state.commandMatches.forEach((command, index) => {
+    const option = document.createElement('button')
+    option.type = 'button'
+    option.id = `command-option-${index}`
+    option.setAttribute('role', 'option')
+    option.setAttribute('aria-selected', String(index === state.commandIndex))
+    option.className = `command-option${index === state.commandIndex ? ' active' : ''}`
+    const label = document.createElement('span')
+    label.className = 'font-medium'
+    label.textContent = `/${command.name}`
+    const description = document.createElement('span')
+    description.className = 'command-option-description'
+    description.textContent = command.description
+    option.append(label, description)
+    option.addEventListener('click', () => chooseCommand(command))
+    menu.append(option)
+  })
+  if (state.commandIndex >= 0)
+    el('prompt').setAttribute('aria-activedescendant', `command-option-${state.commandIndex}`)
+  else el('prompt').removeAttribute('aria-activedescendant')
+}
+
+function chooseCommand(command) {
+  el('prompt').value = `/${command.name}${command.parameters?.length ? ' ' : ''}`
+  el('prompt').focus()
+  hideCommandMenu()
+}
+
+el('prompt').addEventListener('input', showCommandMenu)
+el('prompt').addEventListener('focus', showCommandMenu)
+
 el('composer').addEventListener('submit', (event) => {
   event.preventDefault()
   void submit()
 })
 
 el('prompt').addEventListener('keydown', (event) => {
+  if (event.isComposing) return
+  if (event.key === 'Escape' && state.commandMatches.length > 0) {
+    event.preventDefault()
+    hideCommandMenu()
+    return
+  }
+  if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && state.commandMatches.length > 0) {
+    event.preventDefault()
+    const delta = event.key === 'ArrowDown' ? 1 : -1
+    state.commandIndex =
+      (state.commandIndex + delta + state.commandMatches.length) % state.commandMatches.length
+    renderCommandMenu()
+    return
+  }
+  if (event.key === 'Tab' && state.commandMatches.length > 0) {
+    event.preventDefault()
+    chooseCommand(state.commandMatches[Math.max(0, state.commandIndex)])
+    return
+  }
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
+    if (state.commandMatches.length > 0 && state.commandIndex >= 0) {
+      chooseCommand(state.commandMatches[state.commandIndex])
+      return
+    }
     void submit()
   }
 })
@@ -258,6 +1047,7 @@ async function submit() {
 
   // 以 `/` 开头走命令通道，其余是普通消息。
   const isCommand = text.startsWith('/')
+  hideCommandMenu()
 
   // ⚠️ 刷新页面后重复提交的防线。
   //
@@ -287,8 +1077,8 @@ async function submit() {
         body: { command: text, sessionId: state.sessionId },
         idempotencyKey,
       })
-      appendNote(result.text ?? '命令已执行')
       await loadHistory()
+      await showCommandResult(result)
     } else {
       const payload = await api(`/api/sessions/${state.sessionId}/turns`, {
         method: 'POST',
@@ -305,6 +1095,31 @@ async function submit() {
   } finally {
     setBusy(false)
   }
+}
+
+async function showCommandResult(result) {
+  if (result.data?.kind === 'switch_session' && result.data.sessionId) {
+    await refreshSessions()
+    navigate(chatPath(result.data.sessionId))
+    return
+  }
+  if (result.data?.kind === 'session_select' && Array.isArray(result.data.sessions)) {
+    const container = el('messages')
+    const panel = document.createElement('div')
+    panel.className = 'message-note'
+    for (const session of result.data.sessions) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'command-option'
+      button.textContent = `${session.title}（${session.current_turn} 轮）`
+      button.addEventListener('click', () => navigate(chatPath(session.id)))
+      panel.append(button)
+    }
+    container.append(panel)
+    container.scrollTop = container.scrollHeight
+    return
+  }
+  appendNote(result.text ?? '命令已执行')
 }
 
 async function cancelTurn() {
@@ -328,9 +1143,7 @@ function setBusy(busy) {
 function appendNote(text, isError = false) {
   const container = el('messages')
   const node = document.createElement('div')
-  node.className = isError
-    ? 'rounded-md bg-rose-950/60 px-3 py-2 text-xs text-rose-200'
-    : 'rounded-md bg-slate-900 px-3 py-2 text-xs text-slate-400'
+  node.className = `message-note${isError ? ' error' : ''}`
   node.textContent = text
   container.append(node)
   container.scrollTop = container.scrollHeight
@@ -340,9 +1153,12 @@ function appendNote(text, isError = false) {
 
 async function refreshPending() {
   if (state.sessionId === null) return
+  const sessionId = state.sessionId
+  const projectId = state.projectId
   const payload = await api('/api/pending')
-  const mine = (payload.approvals ?? []).filter((item) => item.sessionId === state.sessionId)
-  const questions = (payload.userInputs ?? []).filter((item) => item.sessionId === state.sessionId)
+  if (state.sessionId !== sessionId || state.projectId !== projectId) return
+  const mine = (payload.approvals ?? []).filter((item) => item.sessionId === sessionId)
+  const questions = (payload.userInputs ?? []).filter((item) => item.sessionId === sessionId)
 
   if (mine.length > 0) {
     showApproval(mine[0])
@@ -492,7 +1308,9 @@ async function connect() {
   if (generation !== state.connectionGeneration || state.sessionId === null) return
 
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
-  const socket = new WebSocket(`${scheme}://${location.host}/api/stream?ticket=${ticket}`)
+  const socket = new WebSocket(
+    `${scheme}://${location.host}/api/stream?ticket=${encodeURIComponent(ticket)}&project=${encodeURIComponent(state.projectId)}`,
+  )
   state.socket = socket
   setConnectionState('连接中…')
 
@@ -634,20 +1452,27 @@ function handleEvent(event) {
 function startLiveText(turnId) {
   const container = el('messages')
   const node = document.createElement('div')
-  node.className = 'whitespace-pre-wrap text-slate-200'
+  node.className = 'message-assistant markdown-body'
   node.dataset.turnId = turnId ?? ''
   container.append(node)
   container.scrollTop = container.scrollHeight
-  state.liveText = { node, text: '' }
+  state.liveText = { node, text: '', renderScheduled: false }
 }
 
 function appendLiveText(chunk) {
   if (state.liveText === null) startLiveText(state.turnId)
   if (state.liveText === null) return
-  state.liveText.text += chunk
-  state.liveText.node.textContent = state.liveText.text
-  const container = el('messages')
-  container.scrollTop = container.scrollHeight
+  const live = state.liveText
+  live.text += chunk
+  if (live.renderScheduled) return
+  live.renderScheduled = true
+  window.requestAnimationFrame(() => {
+    live.renderScheduled = false
+    if (state.liveText !== live) return
+    renderMarkdown(live.node, live.text)
+    const container = el('messages')
+    container.scrollTop = container.scrollHeight
+  })
 }
 
 function finishTurn(result, sessionId) {
@@ -656,9 +1481,13 @@ function finishTurn(result, sessionId) {
   // 走完），所以两边取更完整的那个，而不是无条件相信流式累积。
   if (state.liveText !== null) {
     const finalText = typeof result?.finalText === 'string' ? result.finalText : ''
-    if (finalText !== '' && finalText.length > state.liveText.text.length)
-      state.liveText.node.textContent = finalText
-    if (state.liveText.text === '' && finalText === '') state.liveText.node.remove()
+    const display = finalText.length > state.liveText.text.length ? finalText : state.liveText.text
+    if (display === '') state.liveText.node.remove()
+    else renderMarkdown(state.liveText.node, display)
+    state.liveText = null
+  } else if (typeof result?.finalText === 'string' && result.finalText !== '') {
+    startLiveText(result.turnId)
+    renderMarkdown(state.liveText.node, result.finalText)
     state.liveText = null
   }
 

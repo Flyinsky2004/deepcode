@@ -19,7 +19,7 @@ import { AgentApplication, describeStartupFailure } from '../../src/app/agent-ap
 import { DEFAULT_APP_POLICY } from '../../src/app/policy.js'
 import { ChatStore } from '../../src/storage/chat-store.js'
 import { ConfigStore } from '../../src/storage/config-store.js'
-import { resolveAppPaths } from '../../src/storage/paths.js'
+import { projectIdForPath, resolveAppPaths } from '../../src/storage/paths.js'
 import { ToolRegistry } from '../../src/tools/registry.js'
 import { AgentError, ErrorCode } from '../../src/core/errors.js'
 import type { UserInputRequest, UserInputService } from '../../src/core/input.js'
@@ -142,10 +142,12 @@ describe('AgentApplication.create：全部注入点缺省时自建', () => {
 
       // cwd 可能经过符号链接（macOS 的 /var → /private/var），故用 realpath 比对
       const realCwd = realpathSync(cwd)
-      expect(app.paths.project_dir).toBe(join(realCwd, '.deepcode'))
+      expect(app.paths.project_dir).toBe(
+        join(home, '.deepcode', 'projects', projectIdForPath(realCwd)),
+      )
       // `homedir()` 直接读 $HOME，不做 realpath；cwd 则来自已是真实路径的 process.cwd()
       expect(app.paths.global_dir).toBe(join(home, '.deepcode'))
-      // workspaceRoot 缺省时由 project_dir 去掉 `/.deepcode` 后缀推出
+      // workspaceRoot 与数据目录分离，指向实际工作区。
       expect(app.workspaceRoot).toBe(realCwd)
       expect(app.configStore).toBeInstanceOf(ConfigStore)
       expect(app.chatStore).toBeInstanceOf(ChatStore)

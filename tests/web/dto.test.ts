@@ -304,6 +304,31 @@ describe('其余 DTO', () => {
     expect(toMessageDto(message('')).turnId).toBeNull()
   })
 
+  it('助手历史的 content block 被还原为 Markdown，而不是展示 JSON 字符串', () => {
+    const message: Message = {
+      id: 'm2' as MessageId,
+      conversation_id: 's1' as SessionId,
+      role: 'assistant',
+      content: JSON.stringify([
+        { type: 'text', text: '## 结论\n\n- **第一项**\n- 第二项' },
+        { type: 'tool_use', id: 'call-1', name: 'file_read', input: { path: 'README.md' } },
+      ]),
+      created_at: '2026-01-01T00:00:00.000Z',
+      turn_id: '',
+      subtype: 'tool_call',
+      tool_call_id: null,
+      meta: '{}',
+      agent_type: '',
+    }
+
+    const dto = toMessageDto(message)
+    expect(dto.displayMarkdown).toContain('## 结论')
+    expect(dto.displayMarkdown).toContain('- **第一项**')
+    expect(dto.displayMarkdown).toContain('**file_read**')
+    expect(dto.displayMarkdown).not.toContain('"type":"text"')
+    expect(dto.content).toBe(message.content)
+  })
+
   it('turn 结果 DTO 保留正文，cancelled 由 status 派生', () => {
     const result: TurnResult = {
       turn_id: 'turn_1_s1' as TurnId,

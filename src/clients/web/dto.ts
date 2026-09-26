@@ -30,6 +30,9 @@ import type { RuntimeEventEnvelope } from '../../core/events.js'
 import type { Conversation, Message } from '../../core/models.js'
 import type { TurnResult } from '../../core/turn.js'
 import type { ConfigDocument } from '../../storage/types.js'
+import { ModelTier } from '../../core/provider.js'
+import { POLICY_SETTING_KEYS } from '../../app/policy.js'
+import { messageToDisplay } from '../tui/format.js'
 import type { PendingApprovalView } from '../../app/approval-broker.js'
 import type { PendingUserInputView } from '../../app/user-input-broker.js'
 
@@ -199,6 +202,8 @@ export interface MessageDto {
   readonly role: string
   readonly subtype: string
   readonly content: string
+  /** 将持久化 content block 还原为供 Web 呈现的 Markdown。 */
+  readonly displayMarkdown: string
   readonly createdAt: string
   readonly turnId: string | null
   readonly toolCallId: string | null
@@ -227,6 +232,7 @@ export function toMessageDto(message: Message): MessageDto {
     role: message.role,
     subtype: message.subtype,
     content: message.content,
+    displayMarkdown: messageToDisplay(message),
     createdAt: message.created_at,
     turnId: message.turn_id === '' ? null : message.turn_id,
     toolCallId: message.tool_call_id,
@@ -336,6 +342,9 @@ export function toPendingUserInputDto(view: PendingUserInputView): PendingUserIn
 
 export interface ConfigDto {
   readonly schemaVersion: number
+  readonly language: string
+  readonly availableTiers: readonly string[]
+  readonly policySettingKeys: readonly string[]
   readonly providers: readonly {
     readonly id: string
     readonly name: string
@@ -365,6 +374,7 @@ export interface ConfigDto {
   /** 只暴露 `policy.*` 项：它们是可调阈值，其余 `app_settings` 内容不外泄。 */
   readonly policySettings: Readonly<Record<string, string>>
   readonly mcpServerCount: number
+  readonly mcpServers: readonly { name: string; transport: string; enabled: boolean }[]
   readonly tierCount: number
 }
 
@@ -385,6 +395,9 @@ export function toConfigDto(config: ConfigDocument): ConfigDto {
 
   return {
     schemaVersion: config.schema_version,
+    language: settings['language'] === 'en' ? 'en' : 'zh',
+    availableTiers: Object.values(ModelTier),
+    policySettingKeys: POLICY_SETTING_KEYS,
     providers: config.providers.map((provider) => ({
       id: provider.id,
       name: provider.name,
@@ -412,6 +425,18 @@ export function toConfigDto(config: ConfigDocument): ConfigDto {
     })),
     policySettings,
     mcpServerCount: config.mcp_servers?.length ?? 0,
+    mcpServers: (config.mcp_servers ?? []).flatMap((item) => {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) return []
+      const record = item as Readonly<Record<string, unknown>>
+      if (typeof record['name'] !== 'string') return []
+      return [
+        {
+          name: record['name'],
+          transport: typeof record['transport'] === 'string' ? record['transport'] : 'stdio',
+          enabled: record['enabled'] !== false,
+        },
+      ]
+    }),
     tierCount: config.tier_assignments.length,
   }
 }

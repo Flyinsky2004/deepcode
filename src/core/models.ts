@@ -339,7 +339,9 @@ export interface SkillEventContent {
 export interface AppPaths {
   /** 全局配置目录，`~/.deepcode`。 */
   readonly global_dir: string
-  /** 项目目录，`<cwd>/.deepcode`。 */
+  /** 项目的实际工作目录。 */
+  readonly workspace_root: string
+  /** 项目运行数据目录，`~/.deepcode/projects/<路径哈希>`。 */
   readonly project_dir: string
   /** 全局配置文件，`<global_dir>/config.json`。 */
   readonly config_path: string

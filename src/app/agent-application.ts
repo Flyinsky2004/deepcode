@@ -36,6 +36,7 @@ import { ChatStore } from '../storage/chat-store.js'
 import { ConfigStore } from '../storage/config-store.js'
 import { EventLog } from '../storage/event-log.js'
 import { resolveAppPaths, type AppPaths } from '../storage/paths.js'
+import { prepareProjectStorage } from '../storage/project-storage.js'
 import type { RecoverySnapshot, StoredProvider, TierAssignment } from '../storage/types.js'
 
 import { ModelRouter, type ResolvedModelRoute } from '../providers/router.js'
@@ -221,7 +222,9 @@ export class AgentApplication {
   static async create(options: AgentApplicationOptions = {}): Promise<AgentApplication> {
     const clock = options.clock ?? systemClock
     const paths = options.paths ?? resolveAppPaths()
-    const workspaceRoot = options.workspaceRoot ?? paths.project_dir.replace(/\/\.deepcode$/, '')
+    const workspaceRoot = options.workspaceRoot ?? paths.workspace_root
+
+    await prepareProjectStorage(paths)
 
     const configStore = options.configStore ?? new ConfigStore(paths)
     await configStore.initialize()

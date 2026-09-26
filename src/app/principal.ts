@@ -16,7 +16,7 @@ import type { ConfigStore } from '../storage/config-store.js'
 /** `app_settings` 里存放本机 principal 的键名。 */
 export const LOCAL_PRINCIPAL_SETTING = 'local_principal_id'
 
-/** 标记"旧会话已被认领"，避免每次启动都重写整个 `chat.json`。 */
+/** 旧版认领时间标记；新项目仍需各自扫描未认领会话。 */
 export const PRINCIPAL_CLAIM_SETTING = 'principal_claimed_at'
 
 export interface EnsureLocalPrincipalResult {
@@ -32,8 +32,7 @@ export interface EnsureLocalPrincipalResult {
  * 旧 `chat.json` 没有这个字段（见 `Conversation.principal_id` 的说明），
  * 认领之后它们才对本机用户可见。
  *
- * 认领只在**首次**执行（用 `app_settings` 里的标记判断）：否则每次启动都会
- * 对整份 `chat.json` 做一次全量重写，而它本来就是写放大最严重的文件。
+ * 每个项目都扫描自己的历史，但只有发现未认领会话时才重写 `chat.json`。
  */
 export async function ensureLocalPrincipal(
   configStore: ConfigStore,
@@ -53,10 +52,8 @@ export async function ensureLocalPrincipal(
     }))
   }
 
-  const alreadyClaimed = (await configStore.read()).app_settings[PRINCIPAL_CLAIM_SETTING]
-  if (typeof alreadyClaimed === 'string' && alreadyClaimed.length > 0)
-    return { principalId, claimed: 0 }
-
+  // 历史现在按项目分别落盘。全局旧标记不能代表所有项目已认领，
+  // 否则打开第二个旧项目时，它的空 principal 会话会被永久隐藏。
   const conversations = await chatStore.listConversations()
   const orphans = conversations.filter((c) => c.principal_id === '')
   if (orphans.length > 0) {
@@ -68,13 +65,14 @@ export async function ensureLocalPrincipal(
     }))
   }
 
-  await configStore.update((doc) => ({
-    ...doc,
-    app_settings: {
-      ...doc.app_settings,
-      [PRINCIPAL_CLAIM_SETTING]: new Date().toISOString(),
-    },
-  }))
+  if (orphans.length > 0 || !config.app_settings[PRINCIPAL_CLAIM_SETTING])
+    await configStore.update((doc) => ({
+      ...doc,
+      app_settings: {
+        ...doc.app_settings,
+        [PRINCIPAL_CLAIM_SETTING]: new Date().toISOString(),
+      },
+    }))
 
   return { principalId, claimed: orphans.length }
 }

@@ -26,22 +26,25 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
+import { readdir, realpath, stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { ErrorCode } from '../../core/errors.js'
+import { AgentError, ErrorCode } from '../../core/errors.js'
 import type { SessionId } from '../../core/ids.js'
-import type { AgentApplication } from '../../app/agent-application.js'
+import { AgentApplication } from '../../app/agent-application.js'
 import { CommandHostAdapter } from '../../app/command-host.js'
 import { DEFAULT_APP_POLICY, type AppPolicy } from '../../app/policy.js'
 import type { CommandRegistry } from '../../commands/registry.js'
 import { createBuiltinCommandRegistry } from '../../commands/index.js'
 import type { CommandHost } from '../../commands/types.js'
+import { resolveAppPaths } from '../../storage/paths.js'
+import { listStoredProjects, prepareProjectStorage } from '../../storage/project-storage.js'
 
 import { AuthService, formatAccessNotice, generateToken } from './auth.js'
-import { HttpRouter } from './http-router.js'
+import { HttpRouter, type ProjectBridge } from './http-router.js'
 import {
   AuthMode,
   DEFAULT_WEB_PORT,
@@ -75,6 +78,8 @@ export interface WebServerOptions {
   readonly deps?: ListenPolicyDeps
   readonly now?: () => number
   readonly staticDir?: string
+  /** 测试和嵌入式宿主可注入新项目的组合根。 */
+  readonly projectFactory?: (path: string) => Promise<AgentApplication>
   /**
    * 关闭时是否 `app.dispose()`。
    *
@@ -169,10 +174,10 @@ function readVersion(): string {
 }
 
 export class WebServer {
-  readonly #app: AgentApplication
   readonly #policy: AppPolicy
   readonly #servers: readonly Server[]
-  readonly #stream: WebSocketStream
+  readonly #projects: Map<string, { app: AgentApplication; stream: WebSocketStream }>
+  readonly #defaultProjectId: string
   readonly #logger: WebLogger
   readonly #disposeApplication: boolean
   readonly port: number
@@ -194,7 +199,8 @@ export class WebServer {
   private constructor(input: {
     app: AgentApplication
     servers: readonly Server[]
-    stream: WebSocketStream
+    projects: Map<string, { app: AgentApplication; stream: WebSocketStream }>
+    defaultProjectId: string
     logger: WebLogger
     disposeApplication: boolean
     port: number
@@ -203,11 +209,11 @@ export class WebServer {
     authMode: AuthMode
     state: WebServerState
   }) {
-    this.#app = input.app
     this.#policy = input.app.policy
     this.#state = input.state
     this.#servers = input.servers
-    this.#stream = input.stream
+    this.#projects = input.projects
+    this.#defaultProjectId = input.defaultProjectId
     this.#logger = input.logger
     this.#disposeApplication = input.disposeApplication
     this.port = input.port
@@ -221,7 +227,7 @@ export class WebServer {
 
   /** 当前 WebSocket 连接数。供诊断与测试观察租约释放。 */
   get connectionCount(): number {
-    return this.#stream.size
+    return [...this.#projects.values()].reduce((total, item) => total + item.stream.size, 0)
   }
 
   /** 静态装配入口。参数校验与判定的失败都在这里返回，不抛。 */
@@ -303,7 +309,12 @@ export class WebServer {
     // 而请求处理器必须在 `listen()` 之前就挂上。用两个可变引用弥合这个顺序。
     // 用一个持有者对象而不是两个 `let`：`prefer-const` 会把"声明后只赋值一次"
     // 的 `let` 判成常量，而这里的赋值必须在闭包挂上**之后**才发生。
-    const pending: { router?: HttpRouter; stream?: WebSocketStream } = {}
+    const pending: {
+      router?: HttpRouter
+      stream?: WebSocketStream
+      routers: Map<string, HttpRouter>
+      streams: Map<string, WebSocketStream>
+    } = { routers: new Map(), streams: new Map() }
 
     // ── ⑥ 绑定 ───────────────────────────────────────────────────
     const servers: Server[] = []
@@ -313,7 +324,17 @@ export class WebServer {
     for (const address of decision.addresses) {
       const server = createServer((req, res) => {
         if (state.shuttingDown) state.refusedRequests += 1
-        const active = pending.router
+        const requestUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+        const isProjectRoute =
+          requestUrl.pathname === '/api/projects' ||
+          requestUrl.pathname === '/api/projects/open' ||
+          requestUrl.pathname === '/api/directories'
+        const selected = req.headers['x-deepcode-project']
+        const id = typeof selected === 'string' ? selected : undefined
+        const active =
+          isProjectRoute || id === undefined
+            ? pending.router
+            : (pending.routers.get(id) ?? pending.router)
         if (active === undefined) {
           // 赋值前到来的请求：还没初始化完，「不可用」就是正确的回答。
           res.statusCode = 503
@@ -332,7 +353,12 @@ export class WebServer {
         })
       })
       server.on('upgrade', (req: IncomingMessage, socket, head) => {
-        const active = pending.stream
+        const selected = new URL(
+          req.url ?? '/',
+          `http://${req.headers.host ?? 'localhost'}`,
+        ).searchParams.get('project')
+        const active =
+          selected === null ? pending.stream : (pending.streams.get(selected) ?? pending.stream)
         if (active === undefined) {
           socket.destroy()
           return
@@ -379,39 +405,118 @@ export class WebServer {
       for (const item of servers) item.close()
       return { ok: false, code: cors.code, reason: cors.reason }
     }
+    const origins = cors.policy
 
-    pending.stream = new WebSocketStream({
-      app,
-      auth,
-      origins: cors.policy,
-      policy,
-      connections,
-      logger,
-      now,
-      shuttingDown: () => state.shuttingDown,
-    })
-
-    pending.router = new HttpRouter({
-      app,
-      policy,
-      auth,
-      origins: cors.policy,
-      limiter,
-      authFailures,
-      staticDir: resolveStaticDir(options.staticDir),
-      startedAtMs,
-      now,
-      logger,
-      version: options.version ?? readVersion(),
-      shuttingDown: () => state.shuttingDown,
-      commands: {
-        registry: options.commands?.registry ?? createBuiltinCommandRegistry(),
-        host: options.commands?.host ?? new CommandHostAdapter(app),
+    const projectInstances = new Map<string, { app: AgentApplication; stream: WebSocketStream }>()
+    const projectOpenings = new Map<string, Promise<void>>()
+    const defaultProjectId = basename(app.paths.project_dir)
+    const invalidDirectory = (message: string): AgentError =>
+      new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message,
+        source: 'web.projects',
+      })
+    const directoryAt = async (inputPath: string): Promise<string> => {
+      if (!isAbsolute(inputPath)) throw invalidDirectory('文件夹路径必须是绝对路径')
+      try {
+        const path = await realpath(inputPath)
+        if (!(await stat(path)).isDirectory()) throw invalidDirectory('路径不是文件夹')
+        return path
+      } catch (error) {
+        if (AgentError.is(error)) throw error
+        throw invalidDirectory('文件夹不存在或无法读取')
+      }
+    }
+    const projectBridge: ProjectBridge = {
+      list: () => listStoredProjects(app.paths.global_dir),
+      open: async (inputPath) => {
+        const path = await directoryAt(inputPath)
+        const paths = resolveAppPaths({ home: dirname(app.paths.global_dir), cwd: path })
+        const id = basename(paths.project_dir)
+        if (!projectInstances.has(id)) {
+          let opening = projectOpenings.get(id)
+          if (!opening) {
+            opening = (async () => {
+              const opened = await (options.projectFactory?.(path) ??
+                AgentApplication.create({ paths, workspaceRoot: path }))
+              registerProject(id, opened)
+            })()
+            projectOpenings.set(id, opening)
+          }
+          try {
+            await opening
+          } finally {
+            projectOpenings.delete(id)
+          }
+        } else {
+          await prepareProjectStorage(paths)
+        }
+        return { id, path, name: basename(path) || path }
       },
-    })
+      browse: async (inputPath) => {
+        const requested = inputPath ?? app.workspaceRoot
+        const path = await directoryAt(requested)
+        const entries = await readdir(path, { withFileTypes: true })
+        return {
+          path,
+          parent: dirname(path) === path ? null : dirname(path),
+          directories: entries
+            .filter((item) => item.isDirectory() && !item.name.startsWith('.'))
+            .map((item) => item.name)
+            .sort((a, b) => a.localeCompare(b)),
+        }
+      },
+    }
+
+    function registerProject(id: string, projectApp: AgentApplication): void {
+      const stream = new WebSocketStream({
+        app: projectApp,
+        projectId: id,
+        auth,
+        origins,
+        policy,
+        connections,
+        logger,
+        now,
+        shuttingDown: () => state.shuttingDown,
+      })
+      const router = new HttpRouter({
+        app: projectApp,
+        projectId: id,
+        projects: projectBridge,
+        policy,
+        auth,
+        origins,
+        limiter,
+        authFailures,
+        staticDir: resolveStaticDir(options.staticDir),
+        startedAtMs,
+        now,
+        logger,
+        version: options.version ?? readVersion(),
+        shuttingDown: () => state.shuttingDown,
+        commands: {
+          registry: options.commands?.registry ?? createBuiltinCommandRegistry(),
+          host:
+            id === defaultProjectId && options.commands?.host
+              ? options.commands.host
+              : new CommandHostAdapter(projectApp),
+        },
+      })
+      projectInstances.set(id, { app: projectApp, stream })
+      pending.routers.set(id, router)
+      pending.streams.set(id, stream)
+      stream.start()
+    }
+
+    registerProject(defaultProjectId, app)
+    const defaultRouter = pending.routers.get(defaultProjectId)
+    const defaultStream = pending.streams.get(defaultProjectId)
+    if (!defaultRouter || !defaultStream) throw new Error('默认项目初始化失败')
+    pending.router = defaultRouter
+    pending.stream = defaultStream
 
     // ── ⑧ 输出访问地址（只有真的绑上之后）────────────────────────
-    pending.stream.start()
     const primaryUrl = `http://${formatAddress(bindResult.addresses[0] ?? { host: '127.0.0.1', family: 4 })}:${String(boundPort)}`
     for (const line of formatAccessNotice({
       url: primaryUrl,
@@ -428,7 +533,8 @@ export class WebServer {
     const server = new WebServer({
       app,
       servers,
-      stream: pending.stream,
+      projects: projectInstances,
+      defaultProjectId,
       logger,
       disposeApplication: options.disposeApplication ?? true,
       port: boundPort,
@@ -460,12 +566,18 @@ export class WebServer {
 
     // ② 取消活动 turn。
     let cancelledTurns = 0
-    let busy: SessionId[] = []
+    const busy: { app: AgentApplication; id: SessionId }[] = []
     try {
-      const sessions = await this.#app.listSessions(this.#app.localPrincipalId)
-      busy = sessions.filter((session) => this.#app.isBusy(session.id)).map((session) => session.id)
-      for (const sessionId of busy)
-        if (this.#app.cancelTurn(sessionId, 'server-shutdown')) cancelledTurns += 1
+      for (const { app } of this.#projects.values()) {
+        const sessions = await app.listSessions(app.localPrincipalId)
+        busy.push(
+          ...sessions
+            .filter((session) => app.isBusy(session.id))
+            .map((session) => ({ app, id: session.id })),
+        )
+      }
+      for (const item of busy)
+        if (item.app.cancelTurn(item.id, 'server-shutdown')) cancelledTurns += 1
     } catch (error) {
       this.#logger.warn(`[web-ui] 关闭时枚举活动 turn 失败：${String(error)}`)
     }
@@ -473,7 +585,7 @@ export class WebServer {
     // ③ 有界等待 turn 结束。
     let turnsTimedOut = false
     if (busy.length > 0) {
-      const settled = Promise.allSettled(busy.map((id) => this.#app.awaitTurn(id))).then(
+      const settled = Promise.allSettled(busy.map((item) => item.app.awaitTurn(item.id))).then(
         () => 'settled' as const,
       )
       const raced = await this.#withTimeout(settled, this.#policy.shutdownGraceMs)
@@ -481,22 +593,30 @@ export class WebServer {
     }
 
     // ④ 落盘。事件日志的写入必须完成，否则恢复时会缺事件。
-    const flushed = await this.#withTimeout(this.#app.flush(), this.#policy.shutdownPersistMs)
+    const flushed = await this.#withTimeout(
+      Promise.all([...this.#projects.values()].map(({ app }) => app.flush())),
+      this.#policy.shutdownPersistMs,
+    )
     const flushTimedOut = flushed === 'timeout'
 
     // ⑤ 释放组合根。放在 flush 之后——dispose 会关掉事件日志。
-    if (this.#disposeApplication) {
+    for (const [id, { app }] of this.#projects) {
+      if (id === this.#defaultProjectId && !this.#disposeApplication) continue
       try {
-        this.#app.dispose()
+        app.dispose()
       } catch (error) {
         this.#logger.warn(`[web-ui] dispose 失败：${String(error)}`)
       }
     }
 
     // ⑥ WebSocket 1001。
-    this.#stream.closeAll()
-    await this.#stream.waitForClose(this.#policy.shutdownPersistMs)
-    this.#stream.dispose()
+    for (const { stream } of this.#projects.values()) stream.closeAll()
+    await Promise.all(
+      [...this.#projects.values()].map(({ stream }) =>
+        stream.waitForClose(this.#policy.shutdownPersistMs),
+      ),
+    )
+    for (const { stream } of this.#projects.values()) stream.dispose()
 
     // ⑦ HTTP server。先停止接受新连接，再在宽限期后强制断开残留连接。
     await Promise.all(this.#servers.map((server) => this.#closeServer(server)))

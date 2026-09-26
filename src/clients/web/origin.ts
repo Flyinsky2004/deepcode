@@ -39,7 +39,7 @@ export const CONTENT_SECURITY_POLICY =
 export const ALLOWED_METHODS = 'GET, POST, OPTIONS'
 
 /** 允许的请求头。`Idempotency-Key` 必须在列，否则浏览器 preflight 会失败。 */
-export const ALLOWED_HEADERS = 'Authorization, Content-Type, Idempotency-Key'
+export const ALLOWED_HEADERS = 'Authorization, Content-Type, Idempotency-Key, X-Deepcode-Project'
 
 /** Origin 策略。 */
 export interface OriginPolicy {

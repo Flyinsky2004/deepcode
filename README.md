@@ -63,6 +63,8 @@ pnpm start -- --web-ui --listen local
 `password` 会在启动时明确提示尚未实现；
 `public` 监听必须启用认证；写操作还要求
 `Origin` 校验和 `Idempotency-Key`。
+来自 loopback 地址的 Web UI 请求不受 HTTP 请求速率和认证失败次数限制；
+来自局域网或公网的连接仍按运行阈值限流。
 
 Web 工作台提供 `/projects` 项目列表、`/projects/:id` 项目概览、
 `/projects/:id/chats/:sessionId` 对话、`/commands` 命令目录和 `/settings` 配置页面；
@@ -71,6 +73,19 @@ Web 工作台提供 `/projects` 项目列表、`/projects/:id` 项目概览、
 Tab 和鼠标选择。历史消息和流式回复支持 Markdown（包括代码块、列表和表格）。
 右上角可切换浅色与暗色主题，选择保存在本机浏览器。
 设置页面可管理供应商、模型档位、MCP 服务、TUI 语言及运行阈值；MCP 和运行阈值更改在重启后生效。
+
+### 权限模式与授权
+
+TUI 按 `Shift+Tab` 在「常规 → 自动编辑 → 自动允许 → 计划」间切换；Web 对话输入框下方可选权限模式。所选模式用于**下一条消息启动的 turn**，并随 turn 保存，恢复时仍按原模式执行。
+
+| 模式 | 行为与工具权限 |
+|---|---|
+| 常规 | 写文件、Shell 和网络操作按策略请求审批 |
+| 自动编辑 | 写文件免审批；Shell、网络和高风险操作仍按策略审批 |
+| 自动允许 | 允许更多工具自动执行；高风险操作仍可能请求审批，危险操作仍会拒绝 |
+| 计划 | 专用系统提示词引导模型核实项目现状、按需求制定可执行方案，并在关键条件不明确时向用户提问；拒绝写操作，简单只读 Shell 命令仍需审批 |
+
+审批窗口的「总是允许」会在当前会话内记住该工具，到期时间由 `policy.grant_ttl_ms` 控制；Shell 仅对**完全相同的命令参数**复用授权。路径限制、计划模式禁写和危险操作拒绝始终优先于已记住的授权。
 
 运行单个测试文件：
 
@@ -171,6 +186,12 @@ Audit only the delegated scope. Cite file evidence and list unresolved questions
 ```
 
 同名定义会在启动时明确报错。子代理权限、路径、skill guard 和预算只能从父 turn 继续收窄。
+
+## Web 工具
+
+`web_fetch` 可抓取公开的 HTTP(S) 页面并提取文本。它限制重定向和响应大小，拒绝内网及本机地址；普通权限模式下会请求审批。如果本机代理 DNS 将域名映射到 `198.18.0.0/15` 假 IP，工具会通过 Cloudflare 公共 DNS 验证并连接实际公网 IP。
+
+`web_search` 使用 Brave Search API 返回标题、链接和摘要。在启动 deepcode 前设置 `DEEPCODE_BRAVE_SEARCH_API_KEY` 环境变量；未配置时工具会返回 `NOT_CONFIGURED`。搜索结果可用 `allowed_domains` 和 `blocked_domains` 过滤。密钥只从环境变量读取，不写入配置文件。
 
 ## MCP
 

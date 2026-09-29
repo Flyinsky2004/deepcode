@@ -5,8 +5,7 @@
  * "每个模式取到哪一段"，而不是文案细节——文案改动属于另一类评审。
  *
  * 同时固化一条硬要求：**执行层的模式权限表与提示层的模式描述必须同步**。
- * `MODE_PLAN` 自称"写操作被禁止"，对应 `PermissionEngine` 里 plan 模式对
- * write 能力的硬拒；下面用一行断言把这条对应关系钉住。
+ * PLAN 的提示词还必须引导调查、澄清与制定可验证的实施方案。
  */
 import { describe, expect, it } from 'vitest'
 
@@ -42,12 +41,18 @@ describe('modePrompt', () => {
     expect(new Set(prompts).size).toBe(4)
   })
 
-  it('plan 模式段声明只允许分析/只读，与执行层 plan 硬拒 write 能力一致', () => {
+  it('plan 模式段指导模型调查、提问、制定贴合工程的方案，并声明执行边界', () => {
     const plan = modePrompt(PermissionMode.PLAN)
-    expect(plan).toContain('ONLY analysis, planning, and information gathering are allowed')
-    expect(plan).toContain('Forbidden: file_write')
-    // 执行层：capabilities 含 write 的工具在 PLAN 下被 mode.plan.read-only 拒绝
-    expect(plan).toContain('Each bash command requires user approval')
+    expect(plan).toContain("this project's engineering practices")
+    expect(plan).toContain('inspect the existing code, documentation, tests, and conventions')
+    expect(plan).toContain('do not invent current behavior')
+    expect(plan).toContain('ask_user_question')
+    expect(plan).toContain('Do not guess a consequential answer')
+    expect(plan).toContain('affected components or files')
+    expect(plan).toContain('verification and acceptance checks')
+    expect(plan).toContain('If a critical answer is missing')
+    expect(plan).toContain('Do not call file_write, file_edit')
+    expect(plan).toContain('Read-only shell commands still require approval')
   })
 
   it('未识别的模式值回落到 NORMAL 段（不抛错，保证降级可用）', () => {
@@ -62,6 +67,12 @@ describe('createSystemPrompt', () => {
     expect(prompt.mode).toBe(MODE_NORMAL)
     expect(prompt.safety).toBe(SAFETY_POLICY)
     expect(prompt.subagent).toBe(SUBAGENT_AWARENESS)
+  })
+
+  it('通用安全提示允许计划模式以未来实施方案结束', () => {
+    const rendered = renderSystemPrompt(createSystemPrompt(PermissionMode.PLAN))
+    expect(rendered).toContain('In PLAN mode, proposed implementation steps are future work')
+    expect(rendered).toContain('do not execute them in that turn')
   })
 
   it('未提供 skill 指导与压缩摘要时省略对应层（渲染时不会被拼出空标题）', () => {

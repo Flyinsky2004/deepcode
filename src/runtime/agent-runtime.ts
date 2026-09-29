@@ -262,6 +262,7 @@ export class AgentRuntime {
     prompt: string,
     signal: AbortSignal = new AbortController().signal,
     override?: ModelOverride,
+    mode: PermissionMode = this.options.mode ?? PermissionMode.NORMAL,
   ): Promise<TurnResult> {
     if (this.busy.has(sessionId))
       throw new AgentError({
@@ -286,14 +287,22 @@ export class AgentRuntime {
         this.options.principalId,
         budget,
         this.options.initialWorkingMemory ?? EMPTY_WORKING_MEMORY,
+        this.clock.now(),
+        mode,
       )
       const turnId = persisted.turnId as TurnId
       const { turnNumber } = persisted
-      await this.options.chatStore.updateTurn(sessionId, turnId, {
-        mode: this.options.mode ?? PermissionMode.NORMAL,
-      })
       await this.emit(sessionId, turnId, RuntimeEventType.TURN_START, { turn_number: turnNumber })
-      return await this.runTurn(sessionId, turnId, turnNumber, tracker, signal, override)
+      return await this.runTurn(
+        sessionId,
+        turnId,
+        turnNumber,
+        tracker,
+        signal,
+        override,
+        undefined,
+        mode,
+      )
     } finally {
       this.busy.delete(sessionId)
     }
@@ -373,6 +382,7 @@ export class AgentRuntime {
     signal: AbortSignal,
     override?: ModelOverride,
     persisted?: PersistedTurn,
+    submittedMode?: PermissionMode,
   ): Promise<TurnResult> {
     let phase: TurnPhase = persisted?.phase ?? TurnPhase.STARTING
     let text = persisted?.finalText ?? ''
@@ -386,7 +396,7 @@ export class AgentRuntime {
     let compactedThisTurn = false
     let providerRetries = 0
     let finalizationAttempted = persisted?.phase === TurnPhase.FINALIZING
-    const mode = persisted?.mode ?? this.options.mode ?? PermissionMode.NORMAL
+    const mode = persisted?.mode ?? submittedMode ?? this.options.mode ?? PermissionMode.NORMAL
     let workingMemory = persisted?.workingMemory ?? EMPTY_WORKING_MEMORY
     const wallTimeout = withTimeout(
       signal,

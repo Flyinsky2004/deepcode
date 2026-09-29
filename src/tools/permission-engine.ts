@@ -32,6 +32,21 @@ const ASK_NORMAL = new Set(['file_write', 'file_edit', 'bash', 'web_fetch', 'web
  */
 const isMcpTool = (name: string): boolean => name.startsWith('mcp_')
 
+/** 计划模式只接受可证明只读的简单命令；复杂检索交给专用工具。 */
+function isPlanReadOnlyShell(command: unknown): boolean {
+  if (typeof command !== 'string') return false
+  const value = command.trim()
+  if (/[;&|><`$(){}\\\n\r]/.test(value)) return false
+  const words = value.split(/\s+/)
+  const first = words[0]
+  if (first === 'pwd') return words.length === 1
+  if (['ls', 'cat', 'head', 'tail', 'grep', 'rg'].includes(first ?? ''))
+    return !words.some((word) => /^(--pre(?:-glob)?|--output)(?:=|$)/.test(word))
+  if (first === 'git' && ['status', 'log', 'diff', 'show'].includes(words[1] ?? ''))
+    return !words.some((word) => /^--(?:output|ext-diff|textconv)(?:=|$)/.test(word))
+  return false
+}
+
 /** Ordered, single permission gate used by every tool execution. */
 export class DefaultPermissionEngine implements PermissionEngine {
   async decide(query: PermissionQuery): Promise<PermissionDecision> {
@@ -80,9 +95,14 @@ export class DefaultPermissionEngine implements PermissionEngine {
       query.mode === PermissionMode.PLAN &&
       (query.descriptor.capabilities.includes('write') ||
         (query.descriptor.capabilities.includes('shell') &&
-          query.toolClaim?.action !== PermissionAction.ALLOW))
+          (query.toolName !== 'bash' ||
+            query.toolClaim?.action !== PermissionAction.ALLOW ||
+            !isPlanReadOnlyShell(query.input['command']))))
     )
       return deny('tool is not allowed in plan mode', 'mode.plan.read-only')
+
+    if (query.mode === PermissionMode.PLAN && query.toolName === 'bash')
+      ask ??= request('read-only command requires approval', 'mode.plan.shell-approval')
 
     const modeAllowed =
       query.mode === PermissionMode.YOLO ||
@@ -124,6 +144,18 @@ export class DefaultPermissionEngine implements PermissionEngine {
       ask = request('high-risk action requires approval', 'risk.high-approval')
     if (query.toolName.startsWith('mcp_') && risk !== 'low')
       ask ??= request('MCP tool requires approval', 'mcp.risk-approval')
+    if (
+      ask &&
+      query.matchingGrant &&
+      !(query.mode === PermissionMode.PLAN && query.toolName === 'bash')
+    )
+      return {
+        action: PermissionAction.ALLOW,
+        reason: 'previous user grant',
+        policyId: 'grant.tool',
+        risk,
+        scope: query.matchingGrant,
+      }
     return ask ?? { action: PermissionAction.ALLOW, reason: '', policyId: 'mode.allow', risk }
   }
 }

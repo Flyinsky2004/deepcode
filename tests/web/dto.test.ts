@@ -356,7 +356,10 @@ describe('其余 DTO', () => {
       toolName: 'run_command',
       toolCallId: 'c1',
       argsPreview: `command=curl -H "Authorization: Bearer abcdefghijklmnopqrst"`,
-      commandPreview: `curl -H "Authorization: Bearer abcdefghijklmnopqrst" https://example.com`,
+      approvalPreview: {
+        label: '待执行命令',
+        text: `curl -H "Authorization: Bearer abcdefghijklmnopqrst" https://example.com\nAPI_KEY=private-value\nvisible line`,
+      },
       riskLevel: 'high',
       reason: '需要授权 (second confirmation)',
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -364,8 +367,10 @@ describe('其余 DTO', () => {
       secondConfirmation: true,
     })
     expect(dto.argsPreview).not.toContain('abcdefghijklmnopqrst')
-    expect(dto.commandPreview).toContain('curl -H')
-    expect(dto.commandPreview).not.toContain('abcdefghijklmnopqrst')
+    expect(dto.approvalPreview?.text).toContain('curl -H')
+    expect(dto.approvalPreview?.text).not.toContain('abcdefghijklmnopqrst')
+    expect(dto.approvalPreview?.text).toContain('API_KEY=[redacted]\nvisible line')
+    expect(dto.approvalPreview?.text).not.toContain('private-value')
     expect(dto.secondConfirmation).toBe(true)
   })
 })

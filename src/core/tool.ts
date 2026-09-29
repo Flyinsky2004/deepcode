@@ -468,6 +468,12 @@ export interface ToolSafetyClaim {
  */
 export const DEFAULT_PERMISSION_TIMEOUT_MS = 120_000
 
+/** 仅供当前待审批 UI 展示；不写入权限请求存储或事件日志。 */
+export interface ApprovalPresentation {
+  readonly label: string
+  readonly text: string
+}
+
 export interface ApprovalService {
   /**
    * 请求审批。
@@ -478,7 +484,7 @@ export interface ApprovalService {
   request(
     request: PermissionRequest,
     signal: AbortSignal,
-    presentation?: { readonly commandPreview?: string },
+    presentation?: ApprovalPresentation,
   ): Promise<PermissionResolution>
 }
 
@@ -513,6 +519,8 @@ export interface PermissionQuery {
   readonly mode: PermissionMode
   /** 当前生效的 skill 运行时守护。 */
   readonly skillGuards: readonly SkillGuardRef[]
+  /** 已由执行层从持久记录中验证作用域与有效期的授权。 */
+  readonly matchingGrant?: GrantScope
 }
 
 /** 权限模式。 */

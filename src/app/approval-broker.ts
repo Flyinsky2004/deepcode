@@ -28,6 +28,7 @@ import type {
   PermissionRequest,
   PermissionResolution,
   ApprovalService,
+  ApprovalPresentation,
 } from '../core/tool.js'
 import type { PrincipalId } from '../core/ids.js'
 import type { Clock } from '../core/time.js'
@@ -43,7 +44,7 @@ export interface PendingApprovalView {
   readonly toolCallId: string
   readonly argsPreview: string
   /** 仅在待审批内存队列中保存，供授权后的 Web 待办接口展示。 */
-  readonly commandPreview?: string
+  readonly approvalPreview?: ApprovalPresentation
   readonly riskLevel: string
   readonly reason: string
   readonly createdAt: string
@@ -68,7 +69,7 @@ export type ApprovalResolutionResult =
 
 interface PendingApproval {
   readonly request: PermissionRequest
-  readonly commandPreview?: string
+  readonly approvalPreview?: ApprovalPresentation
   /** 在 `request()` 里挂起、等待决议的调用方。 */
   readonly waiters: Array<(resolution: PermissionResolution) => void>
   readonly timer: ReturnType<typeof setTimeout>
@@ -108,7 +109,7 @@ export class ApprovalBroker implements ApprovalService {
   async request(
     request: PermissionRequest,
     signal: AbortSignal,
-    presentation?: { readonly commandPreview?: string },
+    presentation?: ApprovalPresentation,
   ): Promise<PermissionResolution> {
     const key = request.request_id
 
@@ -135,9 +136,7 @@ export class ApprovalBroker implements ApprovalService {
     const delay = Math.max(0, deadline - this.#clock.nowMs())
     const entry: PendingApproval = {
       request,
-      ...(presentation?.commandPreview === undefined
-        ? {}
-        : { commandPreview: presentation.commandPreview }),
+      ...(presentation === undefined ? {} : { approvalPreview: presentation }),
       waiters: [],
       timer: setTimeout(() => {
         // 超时按 deny 处理（parts/09 §5）。resolvedBy 为 system，
@@ -353,7 +352,7 @@ export class ApprovalBroker implements ApprovalService {
       toolName: request.tool_name,
       toolCallId: request.tool_call_id,
       argsPreview: request.args_preview,
-      ...(entry.commandPreview === undefined ? {} : { commandPreview: entry.commandPreview }),
+      ...(entry.approvalPreview === undefined ? {} : { approvalPreview: entry.approvalPreview }),
       riskLevel: request.risk_level,
       reason: request.reason,
       createdAt: request.created_at,

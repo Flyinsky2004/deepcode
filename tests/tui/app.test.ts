@@ -317,7 +317,7 @@ describe('权限往返（渲染层闭环）', () => {
     // 动作菜单（渲染进 #command-menu）
     expect(frame).toContain('Action required')
     expect(frame).toContain('Approve - allow this tool to execute')
-    expect(frame).toContain('Always Allow - auto-approve this command type')
+    expect(frame).toContain('Always Allow (Shell: exact command only)')
     expect(frame).toContain('Deny - block this tool call')
     expect(frame).toContain('y=approve  a=always allow  n=deny')
     // 输入框切到审批文案

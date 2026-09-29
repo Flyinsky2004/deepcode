@@ -65,7 +65,7 @@ export interface AppPolicy {
  * 默认阈值。
  *
  * 速率限制一项 `parts/09` §1.1 **只要求存在、未给数值**，这里取保守值：
- * 单机自用的 Web UI 远达不到 120 req/min，而一旦被恶意脚本打满也能兜住。
+ * 本机 Web UI 不受请求速率限制；这些值用于非 loopback 连接。
  */
 export const DEFAULT_APP_POLICY: AppPolicy = {
   approvalTimeoutMs: 120_000,

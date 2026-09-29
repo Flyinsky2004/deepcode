@@ -23,6 +23,9 @@ import {
   type ToolDescriptor,
 } from '../core/tool.js'
 import { resolveWorkspacePath } from './path-sandbox.js'
+import { createWebFetchTool, createWebSearchTool } from './web-tools.js'
+
+export { createWebFetchTool, createWebSearchTool } from './web-tools.js'
 
 const descriptor = (
   name: string,
@@ -522,7 +525,33 @@ export function createAskUserQuestionTool(): Tool {
       'Ask the user structured questions to clarify requirements, resolve ambiguity, or make decisions. Use when you need the user to choose between options or confirm a direction.',
       {
         type: 'object',
-        properties: { questions: { type: 'array', minItems: 1, maxItems: 4 } },
+        properties: {
+          questions: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 4,
+            items: {
+              type: 'object',
+              properties: {
+                question: { type: 'string' },
+                header: { type: 'string' },
+                options: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      label: { type: 'string' },
+                      description: { type: 'string' },
+                    },
+                    required: ['label', 'description'],
+                  },
+                },
+                multiSelect: { type: 'boolean' },
+              },
+              required: ['question', 'header', 'options'],
+            },
+          },
+        },
         required: ['questions'],
       },
       'low',
@@ -572,6 +601,8 @@ export function createBuiltinTools(): readonly Tool[] {
     createBashTool(),
     createGlobTool(),
     createGrepTool(),
+    createWebFetchTool(),
+    createWebSearchTool(),
     createAskUserQuestionTool(),
     createTodoWriteTool(),
   ]

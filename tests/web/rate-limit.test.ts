@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ConnectionLimiter,
   TokenBucketLimiter,
+  checkClientRateLimit,
   clientKey,
 } from '../../src/clients/web/rate-limit.js'
 
@@ -152,4 +153,25 @@ describe('clientKey', () => {
     expect(clientKey(undefined)).toBe('unknown')
     expect(clientKey('')).toBe('unknown')
   })
+})
+
+describe('checkClientRateLimit', () => {
+  it.each(['127.0.0.1', '127.255.255.254', '::1', '::ffff:127.0.0.1'])(
+    'loopback %s 不消耗令牌',
+    (address) => {
+      const limiter = new TokenBucketLimiter({ perMinute: 0, burst: 1, now: () => 0 })
+      expect(checkClientRateLimit(limiter, address)).toBeUndefined()
+      expect(checkClientRateLimit(limiter, address)).toBeUndefined()
+      expect(limiter.size).toBe(0)
+    },
+  )
+
+  it.each(['192.168.1.10', '8.8.8.8', '::ffff:192.168.1.10', 'not-an-ip', undefined])(
+    '非 loopback 或未知地址 %s 仍受限流',
+    (address) => {
+      const limiter = new TokenBucketLimiter({ perMinute: 0, burst: 1, now: () => 0 })
+      expect(checkClientRateLimit(limiter, address)?.ok).toBe(true)
+      expect(checkClientRateLimit(limiter, address)?.ok).toBe(false)
+    },
+  )
 })

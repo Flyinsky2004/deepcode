@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises'
+import { access, mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -11,7 +11,9 @@ import { ChatStore } from '../../src/storage/chat-store.js'
 import { ConfigStore } from '../../src/storage/config-store.js'
 import { resolveAppPaths } from '../../src/storage/paths.js'
 import { ToolRegistry } from '../../src/tools/registry.js'
+import { createFileWriteTool } from '../../src/tools/builtins.js'
 import { ErrorCode } from '../../src/core/errors.js'
+import { PermissionMode } from '../../src/core/tool.js'
 import { type PrincipalId } from '../../src/core/ids.js'
 import { ModelEventType, type Provider } from '../../src/core/provider.js'
 import type { ConfigDocument } from '../../src/storage/types.js'
@@ -98,6 +100,66 @@ class Recorder implements EventSubscriber {
 }
 
 describe('AgentApplication：装配', () => {
+  it('每个 turn 的所选模式同时控制工具执行与恢复快照', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'deepcode-mode-'))
+    const paths = resolveAppPaths({ home: dir, cwd: dir })
+    const configStore = new ConfigStore(paths)
+    await configStore.save(config())
+    let calls = 0
+    const systems: string[] = []
+    const providerFactory = (() => ({
+      stream: (request: { system?: string }) => ({
+        usage: { inputTokens: 1, outputTokens: 1 },
+        async *[Symbol.asyncIterator]() {
+          await Promise.resolve()
+          systems.push(request.system ?? '')
+          calls += 1
+          if (calls % 2 === 1)
+            yield {
+              type: ModelEventType.TOOL_USE,
+              id: `write-${calls}`,
+              name: 'file_write',
+              input: { path: 'mode.txt', content: '已写入' },
+            } as never
+          else yield { type: ModelEventType.TEXT, content: '完成' } as never
+        },
+      }),
+      probe: () => Promise.resolve({ ok: true }),
+    })) as never
+    const registry = new ToolRegistry()
+    registry.register(createFileWriteTool())
+    const app = await AgentApplication.create({
+      paths,
+      workspaceRoot: dir,
+      configStore,
+      registry,
+      providerFactory,
+    })
+    const session = await app.createSession(app.localPrincipalId)
+
+    await app.submitTurn({
+      principalId: app.localPrincipalId,
+      sessionId: session.id,
+      prompt: '只做计划',
+      mode: PermissionMode.PLAN,
+    })
+    await expect(access(join(dir, 'mode.txt'))).rejects.toThrow()
+    expect((await app.chatStore.read()).runtime.turns.at(-1)?.mode).toBe(PermissionMode.PLAN)
+    expect(systems[0]).toContain('Current mode: PLAN')
+    expect(systems[0]).toContain('ask_user_question')
+
+    await app.submitTurn({
+      principalId: app.localPrincipalId,
+      sessionId: session.id,
+      prompt: '执行修改',
+      mode: PermissionMode.AUTO_EDIT,
+    })
+    expect(await readFile(join(dir, 'mode.txt'), 'utf8')).toBe('已写入')
+    expect((await app.chatStore.read()).runtime.turns.at(-1)?.mode).toBe(PermissionMode.AUTO_EDIT)
+    expect(systems[2]).toContain('Current mode: AUTO_EDIT')
+    app.dispose()
+  })
+
   it('创建后可端到端跑完一个 turn', async () => {
     const { app } = await harness('你好')
 

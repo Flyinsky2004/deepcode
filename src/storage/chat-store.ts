@@ -13,6 +13,7 @@ import {
   ToolExecutionStatus,
   type PermissionRequest,
   type PermissionResolution,
+  type PermissionMode,
 } from '../core/tool.js'
 import {
   UserInputRequestStatus,
@@ -443,6 +444,7 @@ export class ChatStore {
     budget: PersistedTurn['budget'],
     workingMemory: PersistedTurn['workingMemory'],
     now = this.clock.now(),
+    mode?: PermissionMode,
   ): Promise<PersistedTurn> {
     let created: PersistedTurn | undefined
     await this.update((doc) => {
@@ -493,6 +495,7 @@ export class ChatStore {
           wallTimeMs: 0,
         },
         workingMemory,
+        ...(mode === undefined ? {} : { mode }),
       }
       created = turn
       return {

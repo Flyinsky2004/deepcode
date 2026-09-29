@@ -25,7 +25,7 @@ import { AgentError, ErrorCode, toAgentError } from '../core/errors.js'
 import type { EventSink } from '../core/events.js'
 import type { ObservationSink } from '../core/observability.js'
 import type { PrincipalId, SessionId, TurnId } from '../core/ids.js'
-import type { PermissionMode, ApprovalService } from '../core/tool.js'
+import { PermissionMode, type ApprovalService } from '../core/tool.js'
 import type { UserInputService } from '../core/input.js'
 import { ModelTier, type ModelOverride, type ModelProfile } from '../core/provider.js'
 import { ACTIVE_PHASES, type TurnResult } from '../core/turn.js'
@@ -473,9 +473,16 @@ export class AgentApplication {
     readonly sessionId: SessionId
     readonly prompt: string
     readonly override?: ModelOverride
+    readonly mode?: PermissionMode
     readonly signal?: AbortSignal
   }): Promise<SubmitTurnResult> {
     this.#assertAlive()
+    if (input.mode !== undefined && !Object.values(PermissionMode).includes(input.mode))
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: `invalid permission mode: ${String(input.mode)}`,
+        source: 'app',
+      })
 
     // ⚠️ 占位必须是**同步**的，排在第一个 `await` 之前。
     //
@@ -531,6 +538,7 @@ export class AgentApplication {
         input.prompt,
         controller.signal,
         input.override,
+        input.mode,
       )
       // 把真实 promise 桥接到已登记的 deferred 上。`then` 同时消费掉
       // 拒绝，避免产生 unhandled rejection（调用方拿到的仍是同一个结果）。
@@ -634,6 +642,11 @@ export class AgentApplication {
   }
 
   // ─ 回灌 ──────────────────────────────────────────────────────
+
+  /** 按应用时钟生成“总是允许”的到期时间，供不同客户端使用同一策略。 */
+  grantExpiresAt(): string {
+    return new Date(this.#clock.nowMs() + this.policy.grantTtlMs).toISOString()
+  }
 
   /**
    * 提交审批决议。UI 的唯一审批入口。

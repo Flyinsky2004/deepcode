@@ -20,8 +20,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** 仅暴露已安装的 marked 浏览器模块，不开放 node_modules 路径。 */
+/** 仅暴露明确使用的浏览器依赖，不开放 node_modules 路径。 */
 const MARKED_MODULE = fileURLToPath(import.meta.resolve('marked'))
+const GSAP_MODULE = fileURLToPath(import.meta.resolve('gsap/dist/gsap.min.js'))
 
 /** 扩展名 → Content-Type。 */
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
@@ -54,6 +55,7 @@ function resolveRequestPath(pathname: string, staticDir: string): string | undef
   }
 
   if (decoded === '/vendor/marked.js') return MARKED_MODULE
+  if (decoded === '/vendor/gsap.js') return GSAP_MODULE
 
   const relative = isAppRoute(decoded) ? 'index.html' : decoded.replace(/^\/+/, '')
 

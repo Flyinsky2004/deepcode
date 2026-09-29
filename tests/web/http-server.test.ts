@@ -99,13 +99,12 @@ describe('鉴权', () => {
     expect((await fetch(`${h.baseUrl}/`)).status).toBe(200)
   })
 
-  it('连续认证失败会触发独立的失败限流', async () => {
+  it('本机连续认证失败持续返回 401', async () => {
     const h = await harness({ policy: { authFailuresPerMinute: 2 } })
     const bad = { headers: { Authorization: 'Bearer wrong' } }
-    await h.fetch('/api/sessions', bad)
-    await h.fetch('/api/sessions', bad)
-    const limited = await h.fetch('/api/sessions', bad)
-    expect(limited.status).toBe(429)
+    for (let index = 0; index < 5; index += 1) {
+      expect((await h.fetch('/api/sessions', bad)).status).toBe(401)
+    }
   })
 })
 
@@ -221,6 +220,19 @@ describe('幂等', () => {
 })
 
 describe('turn 提交与并发', () => {
+  it('提交的权限模式写入 turn；非法模式在创建 turn 前拒绝', async () => {
+    const h = await harness()
+    const sessionId = await h.newSession()
+    const endpoint = `/api/sessions/${sessionId}/turns`
+    const invalid = await postJson(h, endpoint, { prompt: '无效模式', mode: 'unknown' })
+    expect(invalid.status).toBe(400)
+    expect((await h.app.chatStore.read()).runtime.turns).toHaveLength(0)
+
+    const response = await postJson(h, endpoint, { prompt: '只做计划', mode: 'plan' })
+    expect(response.status).toBe(200)
+    expect((await h.app.chatStore.read()).runtime.turns.at(-1)?.mode).toBe('plan')
+  })
+
   it('提交后返回 turnId 与结果', async () => {
     const h = await harness({ text: '你好呀' })
     const sessionId = await h.newSession()
@@ -443,6 +455,33 @@ describe('取消', () => {
 })
 
 describe('会话与消息', () => {
+  it('Web 会话有用户消息后用首句作为历史标题，保留自定义标题', async () => {
+    const h = await harness()
+    const created = await readJson<{ sessionId: string }>(
+      await postJson(h, '/api/sessions', { title: 'Web 会话' }),
+    )
+    const sessionId = created.sessionId
+    const customId = await h.app.createSession(h.app.localPrincipalId, '自定义标题')
+
+    const list = async () =>
+      (
+        await readJson<{ sessions: { id: string; title: string }[] }>(
+          await h.fetch('/api/sessions'),
+        )
+      ).sessions
+
+    expect((await list()).find((session) => session.id === sessionId)?.title).toBe('Web 会话')
+    await postJson(h, `/api/sessions/${sessionId}/turns`, {
+      prompt: '  请检查登录流程。\n还要检查错误提示。  ',
+    })
+    await postJson(h, `/api/sessions/${sessionId}/turns`, { prompt: '继续处理后续问题' })
+    await postJson(h, `/api/sessions/${customId.id}/turns`, { prompt: '不要替换这个标题' })
+
+    const sessions = await list()
+    expect(sessions.find((session) => session.id === sessionId)?.title).toBe('请检查登录流程。')
+    expect(sessions.find((session) => session.id === customId.id)?.title).toBe('自定义标题')
+  })
+
   it('列表只返回本 principal 的会话', async () => {
     const h = await harness()
     await h.newSession()
@@ -588,6 +627,11 @@ describe('静态资源', () => {
     expect(markdownParser.headers.get('content-type')).toContain('javascript')
     expect(await markdownParser.text()).toContain('marked')
 
+    const animationEngine = await fetch(`${h.baseUrl}/vendor/gsap.js`)
+    expect(animationEngine.status).toBe(200)
+    expect(animationEngine.headers.get('content-type')).toContain('javascript')
+    expect(await animationEngine.text()).toContain('GSAP')
+
     const api = await h.fetch('/api/sessions')
     expect(api.headers.get('cache-control')).toBe('no-store')
   })
@@ -660,13 +704,12 @@ describe('静态资源', () => {
 })
 
 describe('限流', () => {
-  it('超限 → 429 + Retry-After', async () => {
-    const h = await harness({ policy: { httpBurst: 2, httpRequestsPerMinute: 1 } })
-    await h.fetch('/api/sessions')
-    await h.fetch('/api/sessions')
-    const limited = await h.fetch('/api/sessions')
-    expect(limited.status).toBe(429)
-    expect(limited.headers.get('retry-after')).toBeTruthy()
+  it('本机 API 和静态资源超过阈值也不返回 429', async () => {
+    const h = await harness({ policy: { httpBurst: 1, httpRequestsPerMinute: 0 } })
+    for (let index = 0; index < 5; index += 1) {
+      expect((await h.fetch('/api/sessions')).status).toBe(200)
+      expect((await fetch(`${h.baseUrl}/`)).status).toBe(200)
+    }
   })
 
   it('健康检查不受限流影响', async () => {

@@ -10,7 +10,7 @@ import { marked } from '/vendor/marked.js'
  *
  * 1. **不写 `element.style.*`**。CSP 没有 `style-src 'unsafe-inline'`，内联样式
  *    属性同样被拦——写了不会报错，只会静默不生效，是这类页面最难查的 bug。
- *    所有动态外观靠 class 切换。
+ *    状态外观靠 class 切换，动效由 Web Animations API 合成。
  * 2. **token 不进 URL**。启用认证时 HTTP 走 `Authorization: Bearer`，
  *    WebSocket 走 `POST /api/ws-ticket` 拿一次性 ticket。token 存在
  *    sessionStorage，关掉标签页即失效。
@@ -20,6 +20,7 @@ import { marked } from '/vendor/marked.js'
 
 const TOKEN_KEY = 'deepcode.token'
 const PENDING_KEY_PREFIX = 'deepcode.pending.'
+const MODEL_KEY_PREFIX = 'deepcode.model.'
 const PROJECT_KEY = 'deepcode.project.path'
 const THEME_KEY = 'deepcode.theme'
 
@@ -54,10 +55,231 @@ const state = {
   liveText: null,
   /** 权限对话框当前展示的 requestId。 */
   approvalRequestId: null,
+  permissionMode: 'normal',
+  modelOverride: null,
+  availableModels: [],
+  automaticModelLabel: '自动选择模型',
   routeGeneration: 0,
 }
 
 const el = (id) => document.getElementById(id)
+
+// GSAP 只驱动普通对象的时间进度；视觉帧由 Web Animations API 合成。
+// 这样不会写入 element.style，仍可保留严格的 style-src 'self' CSP。
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+const activeMotion = new WeakMap()
+
+function stopMotion(node) {
+  const current = activeMotion.get(node)
+  if (!current) return
+  current.tween.kill()
+  current.animation.cancel()
+  activeMotion.delete(node)
+}
+
+function motion(node, keyframes, { duration = 0.28, delay = 0, ease = 'power2.out', done } = {}) {
+  if (!node) return
+  stopMotion(node)
+  if (reducedMotion.matches || !node.animate || !window.gsap) {
+    done?.()
+    return
+  }
+  const animation = node.animate(keyframes, {
+    duration: duration * 1000,
+    easing: 'linear',
+    fill: 'both',
+  })
+  animation.pause()
+  animation.currentTime = 0
+  const progress = { value: 0 }
+  const tween = window.gsap.to(progress, {
+    value: 1,
+    duration,
+    delay,
+    ease,
+    onUpdate: () => {
+      animation.currentTime = progress.value * duration * 1000
+    },
+    onComplete: () => {
+      animation.cancel()
+      activeMotion.delete(node)
+      done?.()
+    },
+  })
+  activeMotion.set(node, { tween, animation })
+}
+
+function appear(node, delay = 0, distance = 10) {
+  motion(
+    node,
+    [
+      { opacity: 0, transform: `translateY(${distance}px)` },
+      { opacity: 1, transform: 'translateY(0)' },
+    ],
+    { delay },
+  )
+}
+
+function animateRoute(page) {
+  const root = el(`${page}-page`)
+  const heading = root.querySelector('.page-heading, .chat-header')
+  appear(heading, 0, 8)
+  const cards = root.querySelectorAll('.project-card, .overview-session, .command-card, .stat-card')
+  for (const [index, card] of [...cards].slice(0, 8).entries()) appear(card, 0.04 + index * 0.035)
+  if (page === 'chat') appear(root.querySelector('.composer'), 0.07, 12)
+}
+
+const permissionModes = [
+  { value: 'normal', label: '常规' },
+  { value: 'auto_edit', label: '自动编辑' },
+  { value: 'yolo', label: '完全访问（高风险仍确认）' },
+  { value: 'plan', label: '计划与澄清' },
+]
+const choiceMenus = [
+  { trigger: el('permission-mode'), menu: el('permission-menu') },
+  { trigger: el('composer-model'), menu: el('model-menu') },
+]
+
+function closeChoiceMenu(choice, restoreFocus = false) {
+  if (choice.trigger.getAttribute('aria-expanded') !== 'true') return
+  choice.trigger.setAttribute('aria-expanded', 'false')
+  choice.menu.inert = true
+  motion(
+    choice.menu,
+    [
+      { opacity: 1, transform: 'translateY(0) scale(1)' },
+      { opacity: 0, transform: 'translateY(6px) scale(0.985)' },
+    ],
+    {
+      duration: 0.14,
+      ease: 'power2.in',
+      done: () => {
+        choice.menu.classList.add('hidden')
+        choice.menu.inert = false
+      },
+    },
+  )
+  if (restoreFocus) choice.trigger.focus()
+}
+
+function openChoiceMenu(choice, focusLast = false) {
+  if (choice.trigger.disabled) return
+  for (const other of choiceMenus) if (other !== choice) closeChoiceMenu(other)
+  choice.menu.inert = false
+  choice.menu.classList.remove('hidden')
+  choice.trigger.setAttribute('aria-expanded', 'true')
+  motion(
+    choice.menu,
+    [
+      { opacity: 0, transform: 'translateY(7px) scale(0.985)' },
+      { opacity: 1, transform: 'translateY(0) scale(1)' },
+    ],
+    { duration: 0.2, ease: 'power2.out' },
+  )
+  const options = [...choice.menu.querySelectorAll('[role="menuitemradio"]')]
+  const selected = options.find((option) => option.getAttribute('aria-checked') === 'true')
+  const focused = focusLast ? options.at(-1) : (selected ?? options[0])
+  focused?.focus()
+}
+
+function renderChoiceMenu(choice, items, selectedValue, onSelect) {
+  const hadFocus = choice.menu.contains(document.activeElement)
+  choice.menu.replaceChildren()
+  for (const item of items) {
+    const option = document.createElement('button')
+    option.type = 'button'
+    option.className = 'composer-choice-option'
+    option.setAttribute('role', 'menuitemradio')
+    option.setAttribute('aria-checked', String(item.value === selectedValue))
+    option.tabIndex = -1
+    option.dataset.value = item.value
+    const text = document.createElement('span')
+    text.className = 'composer-choice-option-text'
+    text.textContent = item.label
+    option.append(text)
+    if (item.detail) {
+      const detail = document.createElement('span')
+      detail.className = 'composer-choice-option-detail'
+      detail.textContent = item.detail
+      option.append(detail)
+    }
+    const marker = document.createElement('span')
+    marker.className = 'composer-choice-marker'
+    marker.setAttribute('aria-hidden', 'true')
+    option.append(marker)
+    option.addEventListener('click', () => {
+      onSelect(item.value)
+      closeChoiceMenu(choice, true)
+    })
+    choice.menu.append(option)
+  }
+  if (hadFocus) choice.menu.querySelector('[role="menuitemradio"][aria-checked="true"]')?.focus()
+}
+
+for (const choice of choiceMenus) {
+  choice.trigger.addEventListener('click', () => {
+    if (choice.trigger.getAttribute('aria-expanded') !== 'true') openChoiceMenu(choice)
+    else closeChoiceMenu(choice, true)
+  })
+  choice.trigger.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    openChoiceMenu(choice, event.key === 'ArrowUp')
+  })
+  choice.menu.addEventListener('keydown', (event) => {
+    const options = [...choice.menu.querySelectorAll('[role="menuitemradio"]')]
+    if (options.length === 0) return
+    const current = options.indexOf(document.activeElement)
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeChoiceMenu(choice, true)
+      return
+    }
+    if (event.key === 'Tab') {
+      closeChoiceMenu(choice)
+      return
+    }
+    let next
+    if (event.key === 'ArrowDown') next = (current + 1) % options.length
+    else if (event.key === 'ArrowUp') next = (current - 1 + options.length) % options.length
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = options.length - 1
+    else return
+    event.preventDefault()
+    options[next]?.focus()
+  })
+}
+
+document.addEventListener('pointerdown', (event) => {
+  for (const choice of choiceMenus) {
+    if (
+      choice.trigger.getAttribute('aria-expanded') === 'true' &&
+      !choice.menu.parentElement.contains(event.target)
+    )
+      closeChoiceMenu(choice)
+  }
+})
+
+function setPermissionMode(value) {
+  state.permissionMode = value
+  el('permission-mode').closest('.composer-mode').dataset.mode = value
+  const label = permissionModes.find((mode) => mode.value === value)?.label ?? '常规'
+  el('permission-mode-value').textContent = label
+  el('permission-mode').setAttribute('aria-label', `审批模式：${label}`)
+  renderChoiceMenu(choiceMenus[0], permissionModes, value, setPermissionMode)
+}
+
+function setModelOverride(value) {
+  state.modelOverride = value || null
+  const key = `${MODEL_KEY_PREFIX}${state.sessionId}`
+  if (state.sessionId !== null) {
+    if (state.modelOverride === null) sessionStorage.removeItem(key)
+    else sessionStorage.setItem(key, state.modelOverride)
+  }
+  renderComposerModelChoice()
+}
+
+setPermissionMode(state.permissionMode)
 
 // marked 负责 Markdown 语法；渲染时只重建允许的 DOM 节点，不把模型输出直接
 // 放进页面的 innerHTML。原始 HTML、事件属性、危险链接和图片请求都不能进入页面。
@@ -374,6 +596,7 @@ function showRouteError(error) {
 async function renderRoute() {
   const generation = ++state.routeGeneration
   const route = routeFromPath(location.pathname)
+  if (route.page !== 'chat') for (const choice of choiceMenus) closeChoiceMenu(choice)
   if (location.pathname === '/') {
     window.history.replaceState({}, '', '/projects')
   } else if (route.page === 'projects' && location.pathname !== '/projects') {
@@ -429,6 +652,7 @@ async function renderRoute() {
     el('chat-back').href = `/projects/${state.projectId}`
     await selectSession(route.sessionId)
   }
+  if (generation === state.routeGeneration) animateRoute(route.page)
 }
 
 document.addEventListener('click', (event) => {
@@ -547,10 +771,78 @@ function renderCommands() {
 }
 el('commands-search').addEventListener('input', renderCommands)
 
+const dialogTriggers = new WeakMap()
+
 function toggleDialog(id, open) {
-  el(id).classList.toggle('hidden', !open)
-  el(id).classList.toggle('flex', open)
+  const dialog = el(id)
+  const panel = dialog.firstElementChild
+  if (open) {
+    const wasHidden = dialog.classList.contains('hidden')
+    if (!wasHidden && !dialog.inert) return
+    dialogTriggers.set(dialog, document.activeElement)
+    dialog.inert = false
+    dialog.classList.remove('hidden')
+    dialog.classList.add('flex')
+    motion(dialog, [{ opacity: 0 }, { opacity: 1 }], { duration: 0.2 })
+    motion(
+      panel,
+      [
+        { opacity: 0, transform: 'translateY(14px) scale(0.98)' },
+        { opacity: 1, transform: 'translateY(0) scale(1)' },
+      ],
+      { duration: 0.26 },
+    )
+    const first = dialog.querySelector('input, button:not([disabled])')
+    first?.focus()
+    return
+  }
+  if (dialog.classList.contains('hidden') || dialog.inert) return
+  dialog.inert = true
+  motion(
+    panel,
+    [
+      { opacity: 1, transform: 'translateY(0) scale(1)' },
+      { opacity: 0, transform: 'translateY(8px) scale(0.985)' },
+    ],
+    { duration: 0.16, ease: 'power2.in' },
+  )
+  motion(dialog, [{ opacity: 1 }, { opacity: 0 }], {
+    duration: 0.17,
+    ease: 'power2.in',
+    done: () => {
+      dialog.classList.add('hidden')
+      dialog.classList.remove('flex')
+      dialog.inert = false
+    },
+  })
+  const trigger = dialogTriggers.get(dialog)
+  if (trigger?.isConnected) trigger.focus()
 }
+
+document.addEventListener('keydown', (event) => {
+  const dialog = document.querySelector('[role="dialog"]:not(.hidden):not([inert])')
+  if (!dialog) return
+  if (event.key === 'Escape' && dialog.id === 'project-modal') {
+    event.preventDefault()
+    toggleDialog('project-modal', false)
+  }
+  if (event.key !== 'Tab') return
+  const focusable = [
+    ...dialog.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled])',
+    ),
+  ].filter((node) => node.getClientRects().length > 0)
+  if (focusable.length === 0) return
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+})
 
 el('open-project').addEventListener('click', () => {
   toggleDialog('project-modal', true)
@@ -558,6 +850,9 @@ el('open-project').addEventListener('click', () => {
 })
 el('projects-open').addEventListener('click', () => el('open-project').click())
 el('close-project').addEventListener('click', () => toggleDialog('project-modal', false))
+el('project-modal').addEventListener('click', (event) => {
+  if (event.target === event.currentTarget) toggleDialog('project-modal', false)
+})
 
 async function browseDirectory(path) {
   const query = path ? `?path=${encodeURIComponent(path)}` : ''
@@ -850,6 +1145,14 @@ async function refreshSessions() {
   state.sessions = payload.sessions ?? []
   renderSessions()
   renderOverview()
+  if (state.sessionId !== null) renderSessionHeader()
+}
+
+function renderSessionHeader() {
+  const session = state.sessions.find((item) => item.id === state.sessionId)
+  if (state.sessionId === null) return
+  el('session-title').textContent = session?.title || state.sessionId
+  el('session-meta').textContent = `turn ${session?.currentTurn ?? 0} · ${session?.status ?? ''}`
 }
 
 function renderSessions() {
@@ -880,6 +1183,7 @@ async function createSession() {
 }
 
 async function selectSession(sessionId) {
+  for (const choice of choiceMenus) closeChoiceMenu(choice)
   // 先使旧连接失效，再异步加载新会话历史，避免切换期间旧事件污染新视图。
   state.connectionGeneration += 1
   state.socket?.close()
@@ -890,17 +1194,78 @@ async function selectSession(sessionId) {
     state.lastEventId = null
   }
   state.sessionId = sessionId
+  state.modelOverride = sessionStorage.getItem(`${MODEL_KEY_PREFIX}${sessionId}`)
+  state.availableModels = []
+  state.automaticModelLabel = '加载模型…'
+  renderComposerModelChoice()
   const projectId = state.projectId
-  const session = state.sessions.find((item) => item.id === sessionId)
-  el('session-title').textContent = session?.title ?? sessionId
-  el('session-meta').textContent = `turn ${session?.currentTurn ?? 0} · ${session?.status ?? ''}`
+  renderSessionHeader()
   renderSessions()
 
+  await loadComposerModels(sessionId)
+  if (state.sessionId !== sessionId || state.projectId !== projectId) return
   await loadHistory()
   if (state.sessionId !== sessionId || state.projectId !== projectId) return
   await refreshPending()
   if (state.sessionId !== sessionId || state.projectId !== projectId) return
   connect()
+}
+
+async function loadComposerModels(sessionId) {
+  const config = await api('/api/config')
+  if (state.sessionId !== sessionId) return
+  const enabledProviders = new Map(
+    config.providers
+      .filter((provider) => provider.enabled)
+      .map((provider) => [provider.id, provider]),
+  )
+  state.availableModels = config.models
+    .filter((model) => model.enabled && enabledProviders.has(model.providerId))
+    .map((model) => ({
+      key: JSON.stringify([model.providerId, model.id]),
+      providerId: model.providerId,
+      modelId: model.id,
+      label: model.displayName,
+      providerName: enabledProviders.get(model.providerId).name,
+    }))
+
+  const assigned = config.tiers.find((tier) => tier.tier === 'implementation' && tier.enabled)
+  const defaultModel = state.availableModels.find(
+    (model) => model.providerId === assigned?.providerId && model.modelId === assigned?.modelId,
+  )
+  state.automaticModelLabel = defaultModel ? `${defaultModel.label} · 自动` : '自动选择模型'
+  if (
+    state.modelOverride &&
+    !state.availableModels.some((model) => model.key === state.modelOverride)
+  ) {
+    state.modelOverride = null
+    sessionStorage.removeItem(`${MODEL_KEY_PREFIX}${sessionId}`)
+  }
+  renderComposerModelChoice()
+}
+
+function renderComposerModelChoice() {
+  const selected = state.availableModels.find((model) => model.key === state.modelOverride)
+  const automaticLabel = state.automaticModelLabel
+  const label = selected ? `${selected.label} · ${selected.providerName}` : automaticLabel
+  const trigger = el('composer-model')
+  el('composer-model-value').textContent = label
+  trigger.setAttribute('aria-label', `当前模型：${label}`)
+  trigger.title = `${label} · 选择已配置的模型`
+  trigger.disabled = state.availableModels.length === 0
+  renderChoiceMenu(
+    choiceMenus[1],
+    [
+      { value: '', label: automaticLabel },
+      ...state.availableModels.map((model) => ({
+        value: model.key,
+        label: model.label,
+        detail: model.providerName,
+      })),
+    ],
+    state.modelOverride ?? '',
+    setModelOverride,
+  )
 }
 
 /** 从消息历史重建视图。这是 `resync_required` 之后必须走的路。 */
@@ -1002,8 +1367,10 @@ function showCommandMenu() {
 
 function renderCommandMenu() {
   const menu = el('command-menu')
+  const wasHidden = menu.classList.contains('hidden')
   menu.replaceChildren()
   menu.classList.toggle('hidden', state.commandMatches.length === 0)
+  if (wasHidden && state.commandMatches.length > 0) appear(menu, 0, 6)
   el('prompt').setAttribute('aria-expanded', state.commandMatches.length > 0 ? 'true' : 'false')
   state.commandMatches.forEach((command, index) => {
     const option = document.createElement('button')
@@ -1083,6 +1450,9 @@ async function submit() {
   const input = el('prompt')
   const text = input.value.trim()
   if (text === '' || state.sessionId === null) return
+  const mode = state.permissionMode
+  const modelKey = state.modelOverride
+  const model = state.availableModels.find((item) => item.key === modelKey)
 
   // 以 `/` 开头走命令通道，其余是普通消息。
   const isCommand = text.startsWith('/')
@@ -1098,13 +1468,21 @@ async function submit() {
   if (stored !== null) {
     try {
       const previous = JSON.parse(stored)
-      if (previous.text === text && state.running.has(state.sessionId))
+      if (
+        previous.text === text &&
+        previous.mode === mode &&
+        previous.modelKey === modelKey &&
+        state.running.has(state.sessionId)
+      )
         idempotencyKey = previous.key
     } catch {
       /* 存坏了就当没有，重新生成 */
     }
   }
-  sessionStorage.setItem(pendingKey(state.sessionId), JSON.stringify({ key: idempotencyKey, text }))
+  sessionStorage.setItem(
+    pendingKey(state.sessionId),
+    JSON.stringify({ key: idempotencyKey, text, mode, modelKey }),
+  )
 
   input.value = ''
   setBusy(true)
@@ -1121,7 +1499,13 @@ async function submit() {
     } else {
       const payload = await api(`/api/sessions/${state.sessionId}/turns`, {
         method: 'POST',
-        body: { prompt: text },
+        body: {
+          prompt: text,
+          mode,
+          ...(model === undefined
+            ? {}
+            : { override: { providerId: model.providerId, modelId: model.modelId } }),
+        },
         idempotencyKey,
       })
       // `state: 'running'` 是并发同键请求得到的 202 —— turn 已经在跑，
@@ -1143,6 +1527,7 @@ async function showCommandResult(result) {
     return
   }
   if (result.data?.kind === 'session_select' && Array.isArray(result.data.sessions)) {
+    await refreshSessions()
     const container = el('messages')
     const panel = document.createElement('div')
     panel.className = 'message-note'
@@ -1150,7 +1535,8 @@ async function showCommandResult(result) {
       const button = document.createElement('button')
       button.type = 'button'
       button.className = 'command-option'
-      button.textContent = `${session.title}（${session.current_turn} 轮）`
+      const title = state.sessions.find((item) => item.id === session.id)?.title ?? session.title
+      button.textContent = `${title}（${session.current_turn} 轮）`
       button.addEventListener('click', () => navigate(chatPath(session.id)))
       panel.append(button)
     }
@@ -1186,6 +1572,7 @@ function appendNote(text, isError = false) {
   node.className = `message-note${isError ? ' error' : ''}`
   node.textContent = text
   container.append(node)
+  appear(node, 0, 5)
   container.scrollTop = container.scrollHeight
 }
 
@@ -1211,33 +1598,35 @@ async function refreshPending() {
 function showApproval(view) {
   state.approvalRequestId = view.requestId
   const isBash = view.toolName === 'bash'
-  const hasCommand =
-    typeof view.commandPreview === 'string' &&
-    view.commandPreview.trim() !== '' &&
-    view.commandPreview.trim() !== '[redacted]'
+  el('approval-always').textContent = isBash ? '始终允许此命令' : '始终允许此工具'
+  const detail = view.approvalPreview
+  const hasDetail =
+    typeof detail?.text === 'string' &&
+    detail.text.trim() !== '' &&
+    detail.text.trim() !== '[redacted]'
   el('approval-tool').textContent = view.toolName
   el('approval-risk').textContent =
     { low: '低', medium: '中', high: '高', critical: '极高' }[view.riskLevel] ?? view.riskLevel
   el('approval-reason').textContent =
     isBash && view.reason === 'command requires approval'
       ? '此命令需要批准才能执行。'
-      : (view.reason ?? '')
-  el('approval-command-label').classList.toggle('hidden', !isBash)
-  el('approval-args').textContent =
-    isBash && hasCommand ? view.commandPreview : (view.argsPreview ?? '')
-  el('approval-allow').disabled = isBash && !hasCommand
-  el('approval-allow-once').disabled = isBash && !hasCommand
-  el('approval-error').textContent =
-    isBash && !hasCommand ? '无法读取待执行命令，请刷新页面后重试。' : ''
-  el('approval-error').classList.toggle('hidden', !isBash || hasCommand)
-  el('approval-modal').classList.remove('hidden')
-  el('approval-modal').classList.add('flex')
+      : view.reason === 'tool requires approval'
+        ? '此工具调用需要批准才能执行。'
+        : (view.reason ?? '')
+  el('approval-detail-label').textContent = hasDetail ? detail.label : '待执行内容'
+  el('approval-detail-label').classList.remove('hidden')
+  el('approval-args').textContent = hasDetail ? detail.text : (view.argsPreview ?? '')
+  el('approval-allow').disabled = !hasDetail
+  el('approval-always').disabled = !hasDetail
+  el('approval-allow-once').disabled = !hasDetail
+  el('approval-error').textContent = !hasDetail ? '无法读取待执行内容，请刷新页面后重试。' : ''
+  el('approval-error').classList.toggle('hidden', hasDetail)
+  toggleDialog('approval-modal', true)
 }
 
 function hideApproval() {
   state.approvalRequestId = null
-  el('approval-modal').classList.add('hidden')
-  el('approval-modal').classList.remove('flex')
+  toggleDialog('approval-modal', false)
 }
 
 async function resolveApproval(decision, grantScope) {
@@ -1259,6 +1648,9 @@ async function resolveApproval(decision, grantScope) {
 el('approval-allow').addEventListener('click', () => {
   void resolveApproval('allow')
 })
+el('approval-always').addEventListener('click', () => {
+  void resolveApproval('allow', 'tool')
+})
 el('approval-allow-once').addEventListener('click', () => {
   void resolveApproval('allow', 'once')
 })
@@ -1268,12 +1660,14 @@ el('approval-deny').addEventListener('click', () => {
 
 function renderQuestions(views) {
   const container = el('pending')
+  const wasHidden = container.classList.contains('hidden')
   container.replaceChildren()
   if (views.length === 0) {
     container.classList.add('hidden')
     return
   }
   container.classList.remove('hidden')
+  if (wasHidden) appear(container, 0, 8)
 
   for (const view of views) {
     const box = document.createElement('div')
@@ -1450,6 +1844,12 @@ function handleEvent(event) {
       state.running.add(event.sessionId)
       setBusy(true)
       startLiveText(event.turnId)
+      if (
+        state.sessions.some(
+          (session) => session.id === event.sessionId && session.title === 'Web 会话',
+        )
+      )
+        void refreshSessions().catch(() => undefined)
       return
     case 'text':
       appendLiveText(data.content ?? '')
@@ -1518,6 +1918,7 @@ function startLiveText(turnId) {
   node.className = 'message-assistant markdown-body'
   node.dataset.turnId = turnId ?? ''
   container.append(node)
+  appear(node, 0, 7)
   container.scrollTop = container.scrollHeight
   state.liveText = { node, text: '', renderScheduled: false }
 }

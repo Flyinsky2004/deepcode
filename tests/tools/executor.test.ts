@@ -43,6 +43,7 @@ import { ChatStore } from '../../src/storage/chat-store.js'
 import { resolveAppPaths } from '../../src/storage/paths.js'
 import { ToolRegistry } from '../../src/tools/registry.js'
 import { ToolExecutor, type ExecuteToolOptions } from '../../src/tools/executor.js'
+import { DefaultPermissionEngine } from '../../src/tools/permission-engine.js'
 
 const descriptor = (overrides: Partial<ToolDescriptor> = {}): ToolDescriptor => ({
   name: 'demo',
@@ -363,10 +364,10 @@ describe('ToolExecutor 权限决策', () => {
   })
 
   it('bash 审批单独提供命令预览，审计请求仍保留脱敏摘要', async () => {
-    let commandPreview = ''
+    let detailPreview = ''
     const approvalService: ApprovalService = {
       request: (request, _signal, presentation) => {
-        commandPreview = presentation?.commandPreview ?? ''
+        detailPreview = presentation?.text ?? ''
         return Promise.resolve({
           requestId: request.request_id,
           decision: PermissionAction.ALLOW,
@@ -381,9 +382,37 @@ describe('ToolExecutor 权限决策', () => {
 
     await executor.executeNamed('bash', options({ input: { command: 'npm run build' } }))
 
-    expect(commandPreview).toBe('npm run build')
+    expect(detailPreview).toBe('npm run build')
     const [saved] = await store!.listPermissionRequests()
     expect(saved?.args_preview).toBe('{"command":"[redacted]"}')
+  })
+
+  it('file_write 审批展示拟写入内容，落盘请求仍隐藏 content', async () => {
+    let detailPreview = ''
+    const approvalService: ApprovalService = {
+      request: (request, _signal, presentation) => {
+        detailPreview = presentation?.text ?? ''
+        return Promise.resolve({
+          requestId: request.request_id,
+          decision: PermissionAction.DENY,
+          resolvedBy: 'user',
+        })
+      },
+    }
+    const { executor, store } = await harness([fakeTool({ descriptor: { name: 'file_write' } })], {
+      permissionEngine: engine(PermissionAction.ASK),
+      approvalService,
+    })
+
+    await executor.executeNamed(
+      'file_write',
+      options({ input: { path: 'FLYINCHAT.md', content: '# Hello\nvisible body' } }),
+    )
+
+    expect(detailPreview).toContain('目标文件：FLYINCHAT.md')
+    expect(detailPreview).toContain('# Hello\nvisible body')
+    const [saved] = await store!.listPermissionRequests()
+    expect(saved?.args_preview).toContain('"content":"[redacted]"')
   })
 
   it('审批被拒时返回拒绝理由并记录失败', async () => {
@@ -882,5 +911,113 @@ describe('ToolExecutor 模式透传', () => {
       options({ mode: PermissionMode.PLAN, toolCallId: 'tc2' as ToolCallId }),
     )
     expect(seen).toEqual([PermissionMode.NORMAL, PermissionMode.PLAN])
+  })
+})
+
+describe('ToolExecutor 记住授权', () => {
+  it('同会话的工具授权会复用，过期后重新审批', async () => {
+    const clock = createFakeClock(Date.parse('2026-01-01T00:00:00.000Z'))
+    let approvals = 0
+    const approvalService: ApprovalService = {
+      request: (request) => {
+        approvals += 1
+        return Promise.resolve({
+          requestId: request.request_id,
+          decision: PermissionAction.ALLOW,
+          resolvedBy: 'user',
+          grantScope: {
+            kind: 'tool',
+            toolName: request.tool_name,
+            sessionId: request.session_id,
+            expiresAt: new Date(clock.nowMs() + 1_000).toISOString(),
+          },
+        })
+      },
+    }
+    const tool = fakeTool({
+      descriptor: { name: 'file_write', risk_level: 'medium', capabilities: ['write'] },
+    })
+    const { executor } = await harness([tool], {
+      permissionEngine: new DefaultPermissionEngine(),
+      approvalService,
+      clock,
+    })
+    await expect(executor.executeNamed('file_write', options())).resolves.toMatchObject({
+      ok: true,
+    })
+    await expect(
+      executor.executeNamed(
+        'file_write',
+        options({ turnId: 't2' as TurnId, toolCallId: 'tc2' as ToolCallId }),
+      ),
+    ).resolves.toMatchObject({ ok: true })
+    expect(approvals).toBe(1)
+    await expect(
+      executor.executeNamed(
+        'file_write',
+        options({
+          sessionId: 's2' as SessionId,
+          turnId: 't1' as TurnId,
+          toolCallId: 'tc9' as ToolCallId,
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true })
+    expect(approvals).toBe(2)
+    clock.advance(1_001)
+    await expect(
+      executor.executeNamed(
+        'file_write',
+        options({ turnId: 't3' as TurnId, toolCallId: 'tc3' as ToolCallId }),
+      ),
+    ).resolves.toMatchObject({ ok: true })
+    expect(approvals).toBe(3)
+  })
+
+  it('Shell 授权只对完全相同的参数生效', async () => {
+    let approvals = 0
+    const approvalService: ApprovalService = {
+      request: (request) => {
+        approvals += 1
+        return Promise.resolve({
+          requestId: request.request_id,
+          decision: PermissionAction.ALLOW,
+          resolvedBy: 'user',
+          grantScope: {
+            kind: 'tool',
+            toolName: request.tool_name,
+            sessionId: request.session_id,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        })
+      },
+    }
+    const tool = fakeTool({
+      descriptor: { name: 'bash', risk_level: 'high', capabilities: ['shell'] },
+      safetyCheck: () => ({ action: PermissionAction.ASK, reason: 'needs approval' }),
+    })
+    const { executor } = await harness([tool], {
+      permissionEngine: new DefaultPermissionEngine(),
+      approvalService,
+    })
+    await executor.executeNamed('bash', options({ input: { command: 'npm test' } }))
+    expect(approvals).toBe(2)
+    await executor.executeNamed(
+      'bash',
+      options({
+        turnId: 't2' as TurnId,
+        toolCallId: 'tc2' as ToolCallId,
+        input: { command: 'npm test' },
+      }),
+    )
+    expect(approvals).toBe(2)
+    await executor.executeNamed(
+      'bash',
+      options({
+        turnId: 't3' as TurnId,
+        toolCallId: 'tc3' as ToolCallId,
+        input: { command: 'npm run build' },
+      }),
+    )
+    expect(approvals).toBe(4)
   })
 })

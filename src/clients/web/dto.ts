@@ -35,6 +35,7 @@ import { POLICY_SETTING_KEYS } from '../../app/policy.js'
 import { messageToDisplay } from '../tui/format.js'
 import type { PendingApprovalView } from '../../app/approval-broker.js'
 import type { PendingUserInputView } from '../../app/user-input-broker.js'
+import { redactApprovalText } from '../../tools/approval-preview.js'
 
 /** 脱敏后的占位符。固定字符串，便于前端识别并渲染成"已隐藏"。 */
 export const REDACTED = '[redacted]'
@@ -184,10 +185,19 @@ export interface SessionDto {
   readonly lastInputTokens: number
 }
 
-export function toSessionDto(conversation: Conversation): SessionDto {
+/** Web UI 的占位标题有消息后改用首条用户输入，旧会话也能直接显示有意义的标题。 */
+export function toSessionDto(conversation: Conversation, firstUserMessage?: string): SessionDto {
+  let title = conversation.title
+  if (title === 'Web 会话' && firstUserMessage) {
+    const normalized = firstUserMessage.trim().replace(/\s+/gu, ' ')
+    const sentenceEnd = normalized.search(/[。！？!?]|\.(?=\s|$)/u)
+    const firstSentence = sentenceEnd < 0 ? normalized : normalized.slice(0, sentenceEnd + 1)
+    const characters = [...firstSentence]
+    title = characters.length > 80 ? `${characters.slice(0, 80).join('')}…` : firstSentence
+  }
   return {
     id: conversation.id,
-    title: conversation.title,
+    title,
     status: conversation.status,
     currentTurn: conversation.current_turn,
     agentType: conversation.agent_type,
@@ -291,8 +301,8 @@ export interface PendingApprovalDto {
   readonly toolCallId: string
   /** 已由 `ToolExecutor` 脱敏并截断的参数摘要。 */
   readonly argsPreview: string
-  /** bash 的待执行命令；仅从当前待审批队列读取，不进入事件或审计。 */
-  readonly commandPreview?: string
+  /** 待执行命令或文件变更；仅从当前待审批队列读取，不进入事件或审计。 */
+  readonly approvalPreview?: { readonly label: string; readonly text: string }
   readonly riskLevel: string
   readonly reason: string
   readonly createdAt: string
@@ -310,9 +320,14 @@ export function toPendingApprovalDto(view: PendingApprovalView): PendingApproval
     // 再涂一遍是**有意的冗余**：`args_preview` 的脱敏属于 executor，
     // 而这里是最后一道出口。两张网比一张网可靠，代价只是一次字符串扫描。
     argsPreview: redactValueShapes(view.argsPreview),
-    ...(view.commandPreview === undefined
+    ...(view.approvalPreview === undefined
       ? {}
-      : { commandPreview: redactValueShapes(view.commandPreview) }),
+      : {
+          approvalPreview: {
+            label: redactApprovalText(view.approvalPreview.label),
+            text: redactApprovalText(view.approvalPreview.text),
+          },
+        }),
     riskLevel: view.riskLevel,
     reason: view.reason,
     createdAt: view.createdAt,

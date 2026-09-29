@@ -126,7 +126,7 @@ describe('runtime coverage helpers', () => {
     ).toBe(true)
     const registry = new ToolRegistry()
     for (const tool of createBuiltinTools()) registry.register(tool)
-    expect(registry.names().length).toBe(8)
+    expect(registry.names().length).toBe(10)
     expect(() => registry.register(createFileReadTool())).toThrow()
     expect(() => registry.require('missing')).toThrow()
     registry.replace(read)

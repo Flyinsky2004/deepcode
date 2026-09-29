@@ -54,7 +54,7 @@ export const EN: Readonly<Record<TKey, string>> = {
   [TKey.PERM_LABEL]: 'Permission required',
   [TKey.PERM_PLACEHOLDER]: 'Press Enter to approve, n to deny',
   [TKey.PERM_APPROVE]: 'Approve - allow this tool to execute',
-  [TKey.PERM_ALWAYS_APPROVE]: 'Always Allow - auto-approve this command type',
+  [TKey.PERM_ALWAYS_APPROVE]: 'Always Allow (Shell: exact command only)',
   [TKey.PERM_DENY]: 'Deny - block this tool call',
   [TKey.PERM_ACTION_TITLE]: 'Action required',
   [TKey.PERM_ACTION_FOOTER]: '↑/↓ select  |  Enter confirm  |  y=approve  a=always allow  n=deny',

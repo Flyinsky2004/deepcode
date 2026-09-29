@@ -53,7 +53,7 @@ export const ZH: Readonly<Record<TKey, string>> = {
   [TKey.PERM_LABEL]: '需要权限',
   [TKey.PERM_PLACEHOLDER]: '按 Enter 批准，n 拒绝',
   [TKey.PERM_APPROVE]: '批准 - 允许此工具执行',
-  [TKey.PERM_ALWAYS_APPROVE]: '总是允许 - 自动批准此类命令',
+  [TKey.PERM_ALWAYS_APPROVE]: '总是允许（Shell 仅相同命令）',
   [TKey.PERM_DENY]: '拒绝 - 阻止此工具调用',
   [TKey.PERM_ACTION_TITLE]: '需要操作',
   [TKey.PERM_ACTION_FOOTER]: '↑/↓ 选择  |  Enter 确认  |  y=批准  a=总是允许  n=拒绝',

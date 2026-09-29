@@ -206,6 +206,7 @@ describe('ContextBuilder.build：系统提示', () => {
     expect(envelope.system.skillGuidance).toBeUndefined()
     expect(envelope.system.compactSummary).toBeUndefined()
     expect(envelope.system.mode).not.toBe(MODE_NORMAL)
+    expect(renderEnvelopeSystem(envelope)).toContain('ask_user_question')
   })
 
   it('skillGuidance 回调返回字符串时注入对应层', async () => {

@@ -1130,11 +1130,17 @@ describe('端到端：事件驱动界面', () => {
   })
 
   it('shift+tab 循环模式并驱动状态栏标签', async () => {
-    const { controller } = await harness(textProviderFactory(['ok']))
+    const { controller, chatStore } = await harness(textProviderFactory(['ok']))
     await controller.start()
     expect(controller.getState().mode).toBe(0)
     controller.applyKey({ name: 'shift+tab' })
     expect(controller.getState().mode).toBe(1)
+    await submitAndSettle(controller, '用自动编辑模式处理')
+    expect((await chatStore.read()).runtime.turns.at(-1)?.mode).toBe('auto_edit')
+    controller.applyKey({ name: 'shift+tab' })
+    controller.applyKey({ name: 'shift+tab' })
+    await submitAndSettle(controller, '只制定计划')
+    expect((await chatStore.read()).runtime.turns.at(-1)?.mode).toBe('plan')
   })
 
   it('permission_resolved 事件会收起本地对话框（超时 / 其他客户端）', async () => {
@@ -1227,10 +1233,15 @@ describe('端到端：界面状态机', () => {
     controller.applyKey({ name: 'enter' })
     await waitFor(() => controller.getState().streaming)
     const sessionId = controller.getState().sessionId!
+    // 等真实 provider 的首段文本与 turn_start 都处理完，再单独检验节流。
+    // 仅等 `streaming` 会在提交入口提前成立，后台事件可能恰好把 B 冲进快照。
+    await waitFor(() => controller.getState().streamingText.includes('partial'))
+    controller.flushPublished()
+    advanceTime(60)
 
-    // 第一次推进会发布（此前流式文本为空，不进入节流窗口）
+    // 越过上一帧的节流窗口，第一次手动推进会发布。
     await app.bus.publish({ sessionId, type: 'text', data: { content: 'A' } })
-    await waitFor(() => controller.getSnapshot().streamingText === 'A')
+    await waitFor(() => controller.getSnapshot().streamingText.endsWith('A'))
 
     // 50ms 窗口内的第二次推进：**内部状态更新，快照不更新**
     await app.bus.publish({ sessionId, type: 'text', data: { content: 'B' } })

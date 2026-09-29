@@ -29,6 +29,7 @@ import type { CommandHost } from '../../commands/types.js'
 import type { RuntimeEventEnvelope } from '../../core/events.js'
 import type { SessionId } from '../../core/ids.js'
 import { MessageSubtype } from '../../core/models.js'
+import { PermissionMode } from '../../core/tool.js'
 
 import { applyEvent } from './events.js'
 import { applyInputChanged, editInputValue, submitInput, type CommandEntry } from './input.js'
@@ -277,13 +278,8 @@ export class TuiController {
                   kind: 'tool' as const,
                   toolName: effect.toolName,
                   sessionId,
-                  // ️ 授权必须有过期时间（`GrantScope` 的硬性要求）。这里取
-                  // `idempotencyTtlMs`——它是本项目里"按会话长期保存的记录"的
-                  // 现成 TTL。真正开始**强制** grant 时应当新增一个专门的
-                  // `policy.grant_ttl_ms`，而不是继续借用这个值。
-                  expiresAt: new Date(
-                    this.#now() + this.#app.policy.idempotencyTtlMs,
-                  ).toISOString(),
+                  // 授权必须有过期时间，统一由应用策略生成。
+                  expiresAt: this.#app.grantExpiresAt(),
                 },
               }
             : {}),
@@ -382,6 +378,13 @@ export class TuiController {
         principalId: this.#app.localPrincipalId,
         sessionId,
         prompt,
+        mode:
+          [
+            PermissionMode.NORMAL,
+            PermissionMode.AUTO_EDIT,
+            PermissionMode.YOLO,
+            PermissionMode.PLAN,
+          ][this.#state.mode] ?? PermissionMode.NORMAL,
       })
       // ⚠️ **失败的 turn 不一定抛异常**：runtime 的 `finish(FAILED, ERROR)`
       // 把错误收进 `TurnResult` 后正常返回，因此这里必须检查结果状态——

@@ -22,6 +22,7 @@ import {
   PermissionRequestStatus,
   type PermissionRequest,
   type PermissionResolution,
+  type GrantScope,
   ToolExecutionStatus,
   type Tool,
   type ToolContext,
@@ -36,7 +37,7 @@ import type { ObservationSink } from '../core/observability.js'
 import type { ToolRegistry } from './registry.js'
 import { inputHash as canonicalInputHash, argsPreview } from '../storage/audit.js'
 import { guardsFromTurnState } from '../skills/guards.js'
-import { approvalCommandPreview } from './approval-preview.js'
+import { approvalPresentation } from './approval-preview.js'
 
 export interface ToolExecutorOptions {
   readonly registry: ToolRegistry
@@ -102,6 +103,51 @@ export class ToolExecutor {
 
   async execute(options: ExecuteToolOptions): Promise<ToolResult> {
     return this.executeNamed(options.toolName ?? this.registryName(options.input), options)
+  }
+
+  /** 仅复用用户明确选择的、未过期的同会话授权。Shell 还要求参数完全一致。 */
+  private async matchingGrant(
+    sessionId: SessionId,
+    principalId: string,
+    toolName: string,
+    inputHash: string,
+    priorExecutions: readonly PersistedToolExecution[],
+  ): Promise<GrantScope | undefined> {
+    if (!this.chatStore) return undefined
+    const { permission_requests, permission_resolutions } = (await this.chatStore.read()).runtime
+    for (const record of [...permission_resolutions].reverse()) {
+      const { resolution } = record
+      const scope = resolution.grantScope
+      if (
+        resolution.decision !== PermissionAction.ALLOW ||
+        resolution.resolvedBy !== 'user' ||
+        scope?.kind !== 'tool' ||
+        scope.sessionId !== sessionId ||
+        scope.toolName !== toolName ||
+        !(Date.parse(scope.expiresAt) > this.clock.nowMs())
+      )
+        continue
+      const request = permission_requests.find(
+        (item) =>
+          item.request_id === record.requestId &&
+          item.session_id === sessionId &&
+          item.tool_name === toolName &&
+          item.status === PermissionRequestStatus.APPROVED,
+      )
+      if (!request) continue
+      if (
+        !priorExecutions.some(
+          (item) =>
+            item.toolCallId === request.tool_call_id &&
+            item.principalId === principalId &&
+            item.permissionRequestIds?.includes(request.request_id) &&
+            (toolName !== 'bash' || item.inputHash === inputHash),
+        )
+      )
+        continue
+      return scope
+    }
+    return undefined
   }
 
   async executeNamed(toolName: string, options: ExecuteToolOptions): Promise<ToolResult> {
@@ -201,6 +247,13 @@ export class ToolExecutor {
     }
     if (!existing) await this.chatStore?.addToolExecution(execution)
     const claim = tool.safetyCheck?.(input, ctx)
+    const matchingGrant = await this.matchingGrant(
+      options.sessionId,
+      options.principalId,
+      toolName,
+      inputHash,
+      priorExecutions ?? [],
+    )
     const decision = await this.permissionEngine.decide({
       toolName,
       input,
@@ -209,6 +262,7 @@ export class ToolExecutor {
       ...(claim === undefined ? {} : { toolClaim: claim }),
       mode: options.mode ?? PermissionMode.NORMAL,
       skillGuards,
+      ...(matchingGrant === undefined ? {} : { matchingGrant }),
     })
     await this.observe({
       type: 'permission.decided',
@@ -289,6 +343,7 @@ export class ToolExecutor {
         resolved_by: '',
         resolution: '',
       }
+      const presentation = approvalPresentation(toolName, input)
       if (!prior) {
         await this.chatStore?.addPermissionRequest(request)
         await this.chatStore?.updateToolExecution(execution.executionId, {
@@ -346,13 +401,7 @@ export class ToolExecutor {
           Math.max(0, request.expires_at - this.clock.nowMs()),
         )
         try {
-          resolution = await this.approvalService!.request(
-            request,
-            timeout.signal,
-            toolName === 'bash' && typeof input['command'] === 'string'
-              ? { commandPreview: approvalCommandPreview(input['command']) }
-              : undefined,
-          )
+          resolution = await this.approvalService!.request(request, timeout.signal, presentation)
         } catch {
           /* timeout/cancel/UI failure remains a denial */
         } finally {
@@ -420,13 +469,7 @@ export class ToolExecutor {
           ],
         })
         const second = await this.approvalService
-          .request(
-            secondRequest,
-            options.signal,
-            toolName === 'bash' && typeof input['command'] === 'string'
-              ? { commandPreview: approvalCommandPreview(input['command']) }
-              : undefined,
-          )
+          .request(secondRequest, options.signal, presentation)
           .catch(() => ({
             requestId: secondRequest.request_id,
             decision: PermissionAction.DENY,

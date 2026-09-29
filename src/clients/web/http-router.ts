@@ -7,7 +7,7 @@
  * 2. **关闭中**→ 503 + `Connection: close`（`parts/09` §1.1 优雅关闭第一步）。
  * 3. **query token 拒绝**——先于凭据校验。带着合法 Bearer 但把 token 塞进 URL
  *    的请求同样拒绝，否则"URL 不含 token"只约束了守规矩的人。
- * 4. **限流**——`/api/health` 除外（探活被限流会让编排系统误判服务已死）。
+ * 4. **限流**——loopback 与 `/api/health` 除外（本机 Web UI 请求频繁；探活不能被限流）。
  * 5. **健康检查**——token 模式下唯一不需要凭据的 API，响应里没有可泄露的内容。
  * 6. **静态资源**——不鉴权。浏览器导航无法设置请求头，鉴权只能发生在 API 上；
  *    静态文件里也没有任何秘密。
@@ -33,8 +33,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { ErrorCode, toAgentError } from '../../core/errors.js'
 import type { PrincipalId, SessionId, ToolCallId } from '../../core/ids.js'
 import { createModelOverrideId } from '../../core/ids.js'
+import { MessageRole, MessageSubtype } from '../../core/models.js'
 import type { ModelOverride } from '../../core/provider.js'
-import type { GrantScope } from '../../core/tool.js'
+import { PermissionMode, type GrantScope } from '../../core/tool.js'
 import type { CommandHost, CommandResult } from '../../commands/types.js'
 import type { CommandRegistry } from '../../commands/registry.js'
 import type { AgentApplication } from '../../app/agent-application.js'
@@ -53,7 +54,7 @@ import {
   securityHeaders,
   type OriginPolicy,
 } from './origin.js'
-import { clientKey, type TokenBucketLimiter } from './rate-limit.js'
+import { checkClientRateLimit, type TokenBucketLimiter } from './rate-limit.js'
 import type { WebLogger } from './logger.js'
 import {
   redactSecrets,
@@ -256,10 +257,10 @@ export class HttpRouter {
       return
     }
 
-    // ③ 限流。健康检查豁免。
+    // ③ 限流。本机访问与健康检查豁免；只按 socket.remoteAddress 判断本机。
     if (url.pathname !== '/api/health') {
-      const decision = this.#ctx.limiter.check(clientKey(req.socket.remoteAddress))
-      if (!decision.ok) {
+      const decision = checkClientRateLimit(this.#ctx.limiter, req.socket.remoteAddress)
+      if (decision !== undefined && !decision.ok) {
         const retryAfterSec = Number.isFinite(decision.retryAfterMs)
           ? Math.ceil(decision.retryAfterMs / 1000)
           : 60
@@ -287,7 +288,7 @@ export class HttpRouter {
       return
     }
 
-    // ⑤ 静态资源。不鉴权（浏览器导航无法带请求头），但同样受限额与 CSP 约束。
+    // ⑤ 静态资源。不鉴权（浏览器导航无法带请求头），仍受 CSP 约束。
     if (!isApi) {
       await serveStatic(req, res, url.pathname, this.#ctx.staticDir)
       return
@@ -330,8 +331,8 @@ export class HttpRouter {
       url.pathname,
     )
     if (!auth.ok) {
-      const failures = this.#ctx.authFailures.check(clientKey(req.socket.remoteAddress))
-      if (!failures.ok) {
+      const failures = checkClientRateLimit(this.#ctx.authFailures, req.socket.remoteAddress)
+      if (failures !== undefined && !failures.ok) {
         res.setHeader('Connection', 'close')
         res.setHeader('Retry-After', '60')
         sendError(res, 429, ErrorCode.WEB_RATE_LIMITED, '认证失败次数过多')
@@ -433,7 +434,33 @@ export class HttpRouter {
     if (segments.length === 2 && segments[0] === 'api' && segments[1] === 'sessions') {
       if (method === 'GET') {
         const sessions = await this.#ctx.app.listSessions(principalId)
-        return sendJson(res, 200, { sessions: sessions.map(toSessionDto) })
+        const webSessionIds = new Set(
+          sessions.filter((session) => session.title === 'Web 会话').map((session) => session.id),
+        )
+        const firstUserMessages = new Map<SessionId, { content: string; createdAt: string }>()
+        if (webSessionIds.size > 0) {
+          const document = await this.#ctx.app.chatStore.read()
+          for (const message of document.messages) {
+            if (
+              !webSessionIds.has(message.conversation_id) ||
+              message.role !== MessageRole.USER ||
+              message.subtype !== MessageSubtype.NORMAL ||
+              message.content.trim() === ''
+            )
+              continue
+            const first = firstUserMessages.get(message.conversation_id)
+            if (!first || message.created_at < first.createdAt)
+              firstUserMessages.set(message.conversation_id, {
+                content: message.content,
+                createdAt: message.created_at,
+              })
+          }
+        }
+        return sendJson(res, 200, {
+          sessions: sessions.map((session) =>
+            toSessionDto(session, firstUserMessages.get(session.id)?.content),
+          ),
+        })
       }
       if (method === 'POST') return this.#handleCreateSession(req, res, principalId)
     }
@@ -597,6 +624,9 @@ export class HttpRouter {
     if (typeof prompt !== 'string' || prompt.trim() === '') {
       return sendError(res, 400, ErrorCode.VALIDATION_FAILED, 'prompt 必须是非空字符串')
     }
+    const mode = body['mode']
+    if (mode !== undefined && !Object.values(PermissionMode).includes(mode as PermissionMode))
+      return sendError(res, 400, ErrorCode.VALIDATION_FAILED, '无效的权限模式')
 
     const override = this.#parseOverride(body['override'], prompt, principalId)
     if (override === 'invalid')
@@ -611,7 +641,7 @@ export class HttpRouter {
     await this.#ctx.app.getSession(principalId, sessionId)
 
     const idempotencyKey = this.#scopedKey(principalId, `turn:${sessionId}`, key)
-    const requestHash = hashOf({ prompt, override: override ?? null })
+    const requestHash = hashOf({ prompt, override: override ?? null, mode: mode ?? null })
 
     const prior = await this.#ctx.app.chatStore.getIdempotency(idempotencyKey)
     if (prior) {
@@ -647,6 +677,7 @@ export class HttpRouter {
         sessionId,
         prompt,
         ...(override === undefined ? {} : { override }),
+        ...(mode === undefined ? {} : { mode: mode as PermissionMode }),
       })
       const payload = {
         state: 'done' as const,
@@ -728,14 +759,10 @@ export class HttpRouter {
     )
     if (pending) await this.#ctx.app.getSession(principalId, pending.sessionId as SessionId)
 
-    // 授权范围：Web API **只**开放 `allow-once`。
-    //
-    // `GrantScope` 是一个可辨识联合，另外四种（tool / server / workspace / session）
-    // 需要各自的作用域标识与过期时间，而 Web 请求里没有构造它们所需的上下文
-    // （server id、workspace root、会话剩余寿命）。与其猜一个过期时间，
-    // 不如只开放唯一无歧义的那一种，其余**明确报错**——静默忽略会让用户以为
-    // "我勾了记住这个工具"而实际只批准了一次。
+    // 授权范围由服务端依据待审批请求构造，客户端不能指定工具名或期限。
     const rawScope = body['grantScope']
+    if (decision === 'deny' && rawScope !== undefined && rawScope !== null)
+      return sendError(res, 400, ErrorCode.VALIDATION_FAILED, '拒绝操作不能附带授权范围')
     let grantScope: GrantScope | undefined
     if (rawScope === 'once' || rawScope === 'allow-once') {
       if (pending === undefined)
@@ -746,13 +773,17 @@ export class HttpRouter {
           '该审批请求已结束，无法建立一次性授权；请直接提交 allow/deny',
         )
       grantScope = { kind: 'allow-once', toolCallId: pending.toolCallId as ToolCallId }
+    } else if (rawScope === 'tool') {
+      if (pending === undefined)
+        return sendError(res, 409, ErrorCode.INVALID_STATE_TRANSITION, '该审批请求已结束')
+      grantScope = {
+        kind: 'tool',
+        toolName: pending.toolName,
+        sessionId: pending.sessionId as SessionId,
+        expiresAt: this.#ctx.app.grantExpiresAt(),
+      }
     } else if (rawScope !== undefined && rawScope !== null) {
-      return sendError(
-        res,
-        400,
-        ErrorCode.VALIDATION_FAILED,
-        "Web API 目前只支持 grantScope: 'once'；持久授权（tool/server/workspace/session）尚未开放",
-      )
+      return sendError(res, 400, ErrorCode.VALIDATION_FAILED, "grantScope 仅支持 'once' 或 'tool'")
     }
 
     const result = await this.#ctx.app.resolvePermission({

@@ -10,12 +10,14 @@
  * ## 为什么用令牌桶而不是固定窗口
  *
  * 固定窗口在边界上允许 2 倍突发（窗口末尾打满 + 下个窗口开头再打满）。
- * 而这里要防的是"本地脚本用循环把 Agent 打到不可用"，突发正是它的形态。
+ * 对非本机连接，突发请求仍需要保护 Agent；loopback 请求由调用方豁免。
  *
  * ## 时间从注入的时钟取
  *
  * `Date.now()` 直接调用会让限流测试只能靠 `sleep`，而 sleep 是 flaky 的温床。
  */
+
+import { classifyAddress } from './listen-policy.js'
 
 /** 一次限流判定的结果。 */
 export type LimitDecision =
@@ -196,4 +198,13 @@ export class ConnectionLimiter {
  */
 export function clientKey(remoteAddress: string | undefined): string {
   return remoteAddress === undefined || remoteAddress === '' ? 'unknown' : remoteAddress
+}
+
+/** 本机 Web UI 不消耗令牌；只信任 socket 地址，不信任可伪造的请求头。 */
+export function checkClientRateLimit(
+  limiter: TokenBucketLimiter,
+  remoteAddress: string | undefined,
+): LimitDecision | undefined {
+  if (remoteAddress !== undefined && classifyAddress(remoteAddress) === 'loopback') return undefined
+  return limiter.check(clientKey(remoteAddress))
 }

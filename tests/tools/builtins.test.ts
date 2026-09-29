@@ -66,7 +66,7 @@ const run = async (
 ) => tool.execute(ctx(root, overrides), input as Readonly<Record<string, unknown>>)
 
 describe('内置工具集合', () => {
-  it('createBuiltinTools 返回全部八个内置工具且名字唯一', () => {
+  it('createBuiltinTools 返回全部十个内置工具且名字唯一', () => {
     const names = createBuiltinTools().map((t) => t.descriptor.name)
     expect(names).toEqual([
       'file_read',
@@ -75,6 +75,8 @@ describe('内置工具集合', () => {
       'bash',
       'glob',
       'grep',
+      'web_fetch',
+      'web_search',
       'ask_user_question',
       'todo_write',
     ])
@@ -653,6 +655,34 @@ describe('grep', () => {
 })
 
 describe('ask_user_question 与 todo_write', () => {
+  it('ask_user_question 向模型提供完整的问卷参数结构', () => {
+    expect(createAskUserQuestionTool().descriptor.input_schema).toMatchObject({
+      properties: {
+        questions: {
+          minItems: 1,
+          maxItems: 4,
+          items: {
+            required: ['question', 'header', 'options'],
+            properties: {
+              question: { type: 'string' },
+              header: { type: 'string' },
+              options: {
+                items: {
+                  required: ['label', 'description'],
+                  properties: {
+                    label: { type: 'string' },
+                    description: { type: 'string' },
+                  },
+                },
+              },
+              multiSelect: { type: 'boolean' },
+            },
+          },
+        },
+      },
+    })
+  })
+
   it('ask_user_question 固定返回 USER_INPUT_REQUIRED 并把问卷带在 meta 上', async () => {
     const root = await workspace()
     const questions = [{ question: 'q', header: 'h', options: [{ label: 'A', description: 'a' }] }]

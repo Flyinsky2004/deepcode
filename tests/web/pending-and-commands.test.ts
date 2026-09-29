@@ -93,16 +93,38 @@ describe('审批：HTTP 往返', () => {
       args_preview: '{"command":"[redacted]"}',
     })
     const waiting = h.app.broker?.request(request, new AbortController().signal, {
-      commandPreview: 'npm run build',
+      label: '待执行命令',
+      text: 'npm run build',
     })
 
     const pending = await readJson<{
-      approvals: { argsPreview: string; commandPreview?: string }[]
+      approvals: { argsPreview: string; approvalPreview?: { label: string; text: string } }[]
     }>(await h.fetch('/api/pending'))
     expect(pending.approvals[0]).toMatchObject({
       argsPreview: '{"command":"[redacted]"}',
-      commandPreview: 'npm run build',
+      approvalPreview: { label: '待执行命令', text: 'npm run build' },
     })
+
+    await postJson(h, `/api/permissions/${request.request_id}`, { decision: 'deny' })
+    await waiting
+  })
+
+  it('file_write 待审批接口展示拟写入内容', async () => {
+    const h = await harness()
+    const sessionId = await h.newSession()
+    const request = permissionRequest(sessionId, {
+      args_preview: '{"path":"FLYINCHAT.md","content":"[redacted]"}',
+    })
+    const waiting = h.app.broker?.request(request, new AbortController().signal, {
+      label: '拟写入内容',
+      text: '目标文件：FLYINCHAT.md\n\n文件内容：\n# Hello',
+    })
+
+    const pending = await readJson<{
+      approvals: { argsPreview: string; approvalPreview?: { label: string; text: string } }[]
+    }>(await h.fetch('/api/pending'))
+    expect(pending.approvals[0]?.argsPreview).toContain('"content":"[redacted]"')
+    expect(pending.approvals[0]?.approvalPreview?.text).toContain('# Hello')
 
     await postJson(h, `/api/permissions/${request.request_id}`, { decision: 'deny' })
     await waiting
@@ -152,6 +174,27 @@ describe('审批：HTTP 往返', () => {
     expect(response.status).toBe(200)
     const resolution = await waiting
     expect(resolution?.grantScope).toEqual({ kind: 'allow-once', toolCallId: 'call-1' })
+  })
+
+  it('grantScope: tool 由服务端绑定当前工具、会话及期限', async () => {
+    const h = await harness()
+    const sessionId = await h.newSession()
+    const request = permissionRequest(sessionId)
+    const waiting = h.app.broker?.request(request, new AbortController().signal)
+    const response = await postJson(h, `/api/permissions/${request.request_id}`, {
+      decision: 'allow',
+      grantScope: 'tool',
+    })
+    expect(response.status).toBe(200)
+    const resolution = await waiting
+    expect(resolution?.grantScope).toMatchObject({
+      kind: 'tool',
+      toolName: 'file_write',
+      sessionId,
+    })
+    expect(Date.parse((resolution?.grantScope as { expiresAt: string }).expiresAt)).toBeGreaterThan(
+      Date.now(),
+    )
   })
 
   it('⚠️ 未开放的持久授权范围被明确拒绝，而不是静默降级成一次授权', async () => {

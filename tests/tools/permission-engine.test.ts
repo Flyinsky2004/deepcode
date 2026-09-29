@@ -189,14 +189,14 @@ describe('DefaultPermissionEngine：工具自身声明（claim）', () => {
       makeQuery({
         toolName: 'bash',
         descriptor: DESCRIPTORS.bash,
-        input: {},
+        input: { command: 'git status' },
         mode: PermissionMode.PLAN,
         toolClaim: { action: PermissionAction.ALLOW, reason: '只读命令' },
       }),
     )
-    // plan 模式确实放行了该 shell 工具，但风险策略接管为 ASK
+    // 工具声明为只读后，计划模式仍要求人工批准。
     expect(decision.action).toBe(PermissionAction.ASK)
-    expect(decision.policyId).toBe('risk.high-approval')
+    expect(decision.policyId).toBe('mode.plan.shell-approval')
   })
 })
 
@@ -753,5 +753,56 @@ describe('DefaultPermissionEngine：风险策略', () => {
       policyId: 'mode.allow',
       risk: 'low',
     })
+  })
+
+  it('已有授权只覆盖审批，不覆盖计划模式与硬拒策略', async () => {
+    const matchingGrant = {
+      kind: 'tool' as const,
+      toolName: 'file_write',
+      sessionId: 'session-1' as never,
+      expiresAt: '2027-01-01T00:00:00.000Z',
+    }
+    const input = {
+      toolName: 'file_write',
+      descriptor: DESCRIPTORS.file_write,
+      input: { path: 'a.txt' },
+      matchingGrant,
+    }
+    await expect(engine.decide(makeQuery(input))).resolves.toMatchObject({
+      action: PermissionAction.ALLOW,
+      policyId: 'grant.tool',
+    })
+    await expect(
+      engine.decide(makeQuery({ ...input, mode: PermissionMode.PLAN })),
+    ).resolves.toMatchObject({ action: PermissionAction.DENY, policyId: 'mode.plan.read-only' })
+    await expect(
+      engine.decide(
+        makeQuery({
+          ...input,
+          descriptor: makeDescriptor('file_write', 'critical', ['write']),
+        }),
+      ),
+    ).resolves.toMatchObject({ action: PermissionAction.DENY, policyId: 'risk.critical-deny' })
+  })
+
+  it('计划模式仅让简单只读 Shell 命令进入审批', async () => {
+    const command = (value: string) =>
+      makeQuery({
+        toolName: 'bash',
+        descriptor: DESCRIPTORS.bash,
+        input: { command: value },
+        mode: PermissionMode.PLAN,
+        toolClaim: { action: PermissionAction.ALLOW, reason: '只读' },
+      })
+    await expect(engine.decide(command('git status'))).resolves.toMatchObject({
+      action: PermissionAction.ASK,
+      policyId: 'mode.plan.shell-approval',
+    })
+    for (const unsafe of ['git worktree add /tmp/x', 'git diff --output=/tmp/x', 'rg --pre echo']) {
+      await expect(engine.decide(command(unsafe))).resolves.toMatchObject({
+        action: PermissionAction.DENY,
+        policyId: 'mode.plan.read-only',
+      })
+    }
   })
 })

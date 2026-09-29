@@ -220,31 +220,109 @@
               <textarea
                 id="prompt"
                 rows="2"
-                placeholder="输入消息，或键入 / 使用命令…"
+                placeholder="随心输入"
                 aria-controls="command-menu"
                 aria-autocomplete="list"
-              ></textarea
-              ><button
-                id="send"
-                type="submit"
-                class="button button-primary"
-                aria-label="发送消息"
-                title="发送消息"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M12 19V5m-6 6 6-6 6 6" />
-                </svg>
-              </button>
+              ></textarea>
+              <div class="composer-toolbar">
+                <div class="composer-mode" data-mode="normal">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 2 4 5v6c0 5.2 3.4 9 8 11 4.6-2 8-5.8 8-11V5l-8-3Z" />
+                    <path d="M12 8v5m0 3h.01" />
+                  </svg>
+                  <span class="composer-mode-label">审批模式</span>
+                  <button
+                    id="permission-mode"
+                    class="composer-choice-trigger"
+                    type="button"
+                    aria-label="审批模式：常规"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                    aria-controls="permission-menu"
+                  >
+                    <span id="permission-mode-value" class="composer-choice-value">常规</span>
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </button>
+                  <div
+                    id="permission-menu"
+                    class="composer-choice-menu hidden"
+                    role="menu"
+                    aria-label="审批模式"
+                  ></div>
+                </div>
+                <div class="composer-toolbar-right">
+                  <div class="composer-model">
+                    <button
+                      id="composer-model"
+                      class="composer-choice-trigger"
+                      type="button"
+                      aria-label="当前模型"
+                      aria-haspopup="menu"
+                      aria-expanded="false"
+                      aria-controls="model-menu"
+                      title="选择已配置的模型"
+                      disabled
+                    >
+                      <span id="composer-model-value" class="composer-choice-value">加载模型…</span>
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                    </button>
+                    <div
+                      id="model-menu"
+                      class="composer-choice-menu hidden"
+                      role="menu"
+                      aria-label="选择模型"
+                    ></div>
+                  </div>
+                  <button
+                    id="send"
+                    type="submit"
+                    class="button button-primary"
+                    aria-label="发送消息"
+                    title="发送消息"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 19V5m-6 6 6-6 6 6" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
             </form>
-            <p class="composer-hint">Enter 发送 · Shift + Enter 换行 · / 打开命令</p>
           </div>
         </section>
         <section id="commands-page" class="route-page page-scroll hidden">
@@ -604,7 +682,7 @@
           >）请求执行。
         </p>
         <p id="approval-reason" class="text-sm text-slate-400"></p>
-        <p id="approval-command-label" class="approval-command-label hidden">待执行命令</p>
+        <p id="approval-detail-label" class="approval-detail-label hidden"></p>
         <pre
           id="approval-args"
           class="max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300"
@@ -629,10 +707,18 @@
           >
             允许
           </button>
+          <button
+            id="approval-always"
+            class="rounded-lg border border-sky-600 px-3 py-2 text-sm text-sky-200 hover:bg-sky-950"
+            title="Shell 仅对完全相同的命令生效"
+          >
+            始终允许此工具
+          </button>
         </div>
       </div>
     </div>
 
+    <script defer src="/vendor/gsap.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

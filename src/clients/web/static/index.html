@@ -191,9 +191,15 @@
               <h1 id="session-title">未选择会话</h1>
               <p id="session-meta" class="muted"></p>
             </div>
-            <button id="cancel-turn" type="button" class="button button-danger hidden">
-              取消当前 turn
-            </button>
+            <div class="chat-header-actions">
+              <div class="view-switch" role="group" aria-label="对话视图">
+                <button id="view-normal" type="button" aria-pressed="true">普通</button>
+                <button id="view-advanced" type="button" aria-pressed="false">高级</button>
+              </div>
+              <button id="cancel-turn" type="button" class="button button-danger hidden">
+                取消当前 turn
+              </button>
+            </div>
           </header>
           <div
             id="messages"
@@ -202,6 +208,26 @@
             aria-relevant="additions text"
             class="messages"
           ></div>
+          <div id="trace-view" class="trace-view hidden" aria-label="高级对话追踪">
+            <div class="trace-heading">
+              <div>
+                <p class="eyebrow">LOCAL TRACE</p>
+                <h2>对话过程</h2>
+                <p>消息、运行事件与本地观测记录。展开卡片可查看每个字段。</p>
+              </div>
+              <div id="trace-stats" class="trace-stats" aria-live="polite"></div>
+            </div>
+            <div class="trace-grid">
+              <section class="trace-section" aria-labelledby="trace-messages-title">
+                <h3 id="trace-messages-title">消息记录</h3>
+                <div id="trace-messages" class="trace-list"></div>
+              </section>
+              <section class="trace-section" aria-labelledby="trace-activity-title">
+                <h3 id="trace-activity-title">运行时间线</h3>
+                <div id="trace-activity" class="trace-list"></div>
+              </section>
+            </div>
+          </div>
           <div
             id="pending"
             role="region"

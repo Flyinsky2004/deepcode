@@ -23,6 +23,7 @@ const PENDING_KEY_PREFIX = 'deepcode.pending.'
 const MODEL_KEY_PREFIX = 'deepcode.model.'
 const PROJECT_KEY = 'deepcode.project.path'
 const THEME_KEY = 'deepcode.theme'
+const VIEW_KEY = 'deepcode.chat.view'
 
 const initialTheme = localStorage.getItem(THEME_KEY)
 document.documentElement.dataset.theme =
@@ -60,6 +61,11 @@ const state = {
   availableModels: [],
   automaticModelLabel: '自动选择模型',
   routeGeneration: 0,
+  viewMode: localStorage.getItem(VIEW_KEY) === 'advanced' ? 'advanced' : 'normal',
+  messages: [],
+  traceEvents: new Map(),
+  traceObservations: new Map(),
+  traceRefreshTimer: null,
 }
 
 const el = (id) => document.getElementById(id)
@@ -534,6 +540,7 @@ async function switchProject(project) {
   state.turnId = null
   state.running.clear()
   state.liveText = null
+  resetTrace()
   localStorage.setItem(PROJECT_KEY, opened.path)
   el('project-path').textContent = opened.path
   el('project-path').title = opened.path
@@ -1194,6 +1201,7 @@ async function selectSession(sessionId) {
     state.lastEventId = null
   }
   state.sessionId = sessionId
+  resetTrace()
   state.modelOverride = sessionStorage.getItem(`${MODEL_KEY_PREFIX}${sessionId}`)
   state.availableModels = []
   state.automaticModelLabel = '加载模型…'
@@ -1275,12 +1283,17 @@ async function loadHistory() {
   const projectId = state.projectId
   const payload = await api(`/api/sessions/${sessionId}/messages`)
   if (state.sessionId !== sessionId || state.projectId !== projectId) return
+  state.messages = payload.messages ?? []
   const container = el('messages')
   container.replaceChildren()
   state.liveText = null
-  for (const message of payload.messages ?? []) renderMessage(message)
+  for (const message of state.messages) renderMessage(message)
   if (container.childElementCount === 0) renderChatEmptyState()
   container.scrollTop = container.scrollHeight
+  if (state.viewMode === 'advanced') {
+    renderTraceMessages()
+    await loadTrace()
+  }
 }
 
 function renderChatEmptyState() {
@@ -1333,6 +1346,349 @@ function renderMessage(message) {
 
   container.append(wrap)
   container.scrollTop = container.scrollHeight
+}
+
+// ── 高级对话视图 ────────────────────────────────────────────────────
+
+const traceEventNames = {
+  turn_start: '任务开始',
+  thinking: '模型思考',
+  text: '文本增量',
+  tool_use: '工具调用',
+  tool_result: '工具结果',
+  skill_resolved: '技能选择',
+  compact_start: '开始压缩',
+  compact_end: '压缩完成',
+  auto_continue: '自动续跑',
+  permission_required: '等待审批',
+  permission_resolved: '审批完成',
+  user_input_required: '等待用户输入',
+  turn_end: '任务结束',
+  model_route_changed: '模型切换',
+  cancel_requested: '请求取消',
+  error: '运行错误',
+  'model.route.selected': '模型路由',
+  'model.call.started': '模型请求开始',
+  'model.call.completed': '模型请求完成',
+  'model.call.failed': '模型请求失败',
+  'model.retry': '模型重试',
+  'model.fallback': '模型回退',
+  'tool.execution.started': '工具执行开始',
+  'tool.execution.completed': '工具执行完成',
+  'permission.requested': '请求审批',
+  'permission.decided': '审批决定',
+  'permission.resolved': '审批处理完成',
+  'compact.completed': '压缩统计',
+  'subagent.queued': '子代理排队',
+  'subagent.started': '子代理开始',
+  'subagent.completed': '子代理完成',
+  'subagent.resume.requested': '子代理恢复',
+  'turn.completed': '任务统计',
+}
+
+const traceFieldNames = {
+  eventId: '事件 ID',
+  observationId: '观测 ID',
+  sequence: '序号',
+  type: '类型',
+  timestamp: '发生时间',
+  createdAt: '创建时间',
+  sessionId: '会话 ID',
+  turnId: '任务 ID',
+  toolCallId: '工具调用 ID',
+  subagentSessionId: '子代理会话 ID',
+  policyId: '策略 ID',
+  elapsedMs: '耗时（毫秒）',
+  data: '事件数据',
+  meta: '附加信息',
+  content: '内容',
+  displayMarkdown: '渲染内容',
+  role: '角色',
+  subtype: '子类型',
+  agentType: '代理类型',
+}
+
+function resetTrace() {
+  if (state.traceRefreshTimer !== null) clearTimeout(state.traceRefreshTimer)
+  state.traceRefreshTimer = null
+  state.messages = []
+  state.traceEvents.clear()
+  state.traceObservations.clear()
+  el('trace-messages').replaceChildren()
+  el('trace-activity').replaceChildren()
+  renderTraceStats()
+}
+
+function setViewMode(mode) {
+  state.viewMode = mode
+  localStorage.setItem(VIEW_KEY, mode)
+  el('view-normal').setAttribute('aria-pressed', String(mode === 'normal'))
+  el('view-advanced').setAttribute('aria-pressed', String(mode === 'advanced'))
+  el('messages').classList.toggle('hidden', mode !== 'normal')
+  el('trace-view').classList.toggle('hidden', mode !== 'advanced')
+  if (mode === 'advanced') {
+    renderTraceMessages()
+    renderTraceActivity()
+    if (state.sessionId !== null) void loadTrace()
+  }
+}
+
+el('view-normal').addEventListener('click', () => setViewMode('normal'))
+el('view-advanced').addEventListener('click', () => setViewMode('advanced'))
+setViewMode(state.viewMode)
+
+function traceTime(value) {
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? String(value ?? '') : parsed.toLocaleString('zh-CN')
+}
+
+function fieldValue(value, depth = 0) {
+  const node = document.createElement('div')
+  node.className = 'trace-field-value'
+  if (value === null) {
+    node.textContent = '空值'
+    node.classList.add('trace-null')
+  } else if (Array.isArray(value)) {
+    if (value.length === 0) node.textContent = '空列表'
+    else {
+      const list = document.createElement('ol')
+      list.className = 'trace-array'
+      for (const item of value) {
+        const row = document.createElement('li')
+        row.append(fieldValue(item, depth + 1))
+        list.append(row)
+      }
+      node.append(list)
+    }
+  } else if (typeof value === 'object') {
+    if (depth > 16) node.textContent = '层级过深'
+    else if (Object.keys(value).length === 0) node.textContent = '空对象'
+    else node.append(fieldList(value, depth + 1))
+  } else if (typeof value === 'boolean') {
+    node.textContent = value ? '是 · true' : '否 · false'
+    node.classList.add(value ? 'trace-true' : 'trace-false')
+  } else {
+    node.textContent = String(value)
+    if (typeof value === 'string' && value.includes('\n')) node.classList.add('trace-multiline')
+  }
+  return node
+}
+
+function fieldList(record, depth = 0) {
+  const list = document.createElement('dl')
+  list.className = 'trace-fields'
+  for (const [key, value] of Object.entries(record)) {
+    const row = document.createElement('div')
+    row.className = 'trace-field'
+    const label = document.createElement('dt')
+    label.textContent = traceFieldNames[key] ?? key
+    if (traceFieldNames[key]) {
+      const original = document.createElement('small')
+      original.textContent = key
+      label.append(original)
+    }
+    const content = document.createElement('dd')
+    content.append(fieldValue(value, depth + 1))
+    row.append(label, content)
+    list.append(row)
+  }
+  return list
+}
+
+function traceDetails(record, initiallyOpen = false) {
+  const details = document.createElement('details')
+  details.className = 'trace-details'
+  details.open = initiallyOpen
+  const summary = document.createElement('summary')
+  summary.textContent = '查看全部字段'
+  details.append(summary)
+  let populated = false
+  const populate = () => {
+    if (!details.open || populated) return
+    details.append(fieldList(record))
+    populated = true
+  }
+  details.addEventListener('toggle', populate)
+  populate()
+  return details
+}
+
+function renderTraceStats() {
+  const stats = el('trace-stats')
+  stats.replaceChildren()
+  for (const [label, value] of [
+    ['消息', state.messages.length],
+    ['事件', state.traceEvents.size],
+    ['观测', state.traceObservations.size],
+  ]) {
+    const pill = document.createElement('span')
+    pill.textContent = `${value} ${label}`
+    stats.append(pill)
+  }
+}
+
+function renderTraceMessages() {
+  const container = el('trace-messages')
+  const expanded = new Set(
+    [...container.querySelectorAll('.trace-card')]
+      .filter((card) => card.querySelector('.trace-details')?.open)
+      .map((card) => card.dataset.traceId),
+  )
+  container.replaceChildren()
+  for (const message of state.messages) {
+    const card = document.createElement('article')
+    card.className = 'trace-card trace-message'
+    card.dataset.traceId = message.id
+    const heading = document.createElement('div')
+    heading.className = 'trace-card-heading'
+    const title = document.createElement('strong')
+    title.textContent =
+      { user: '用户', assistant: '助手', tool: '工具' }[message.role] ?? message.role
+    const time = document.createElement('time')
+    time.dateTime = message.createdAt
+    time.textContent = traceTime(message.createdAt)
+    heading.append(title, time)
+    const body = document.createElement('div')
+    body.className = 'trace-message-body markdown-body'
+    const markdown = message.displayMarkdown ?? message.content
+    if (markdown) renderMarkdown(body, markdown)
+    else body.textContent = '无正文'
+    card.append(heading, body, traceDetails(message, expanded.has(message.id)))
+    container.append(card)
+  }
+  if (state.messages.length === 0) container.textContent = '暂无消息记录。'
+  renderTraceStats()
+}
+
+async function refreshTraceMessages() {
+  if (state.viewMode !== 'advanced' || state.sessionId === null) return
+  const sessionId = state.sessionId
+  const projectId = state.projectId
+  const payload = await api(`/api/sessions/${sessionId}/messages`)
+  if (state.sessionId !== sessionId || state.projectId !== projectId) return
+  state.messages = payload.messages ?? []
+  renderTraceMessages()
+}
+
+function traceSummary(record, kind) {
+  const data = record.data ?? {}
+  if (kind === 'event') {
+    if (record.type === 'text' || record.type === 'thinking')
+      return String(data.preview ?? data.content ?? '').slice(0, 120)
+    if (record.type === 'tool_use' || record.type === 'tool_result')
+      return [data.name, data.error_code].filter(Boolean).join(' · ')
+    if (record.type === 'turn_end') return String(data.status ?? '')
+    if (record.type === 'error') return String(data.message ?? '')
+    if (record.type === 'model_route_changed')
+      return `${data.from_provider ?? ''}/${data.from_model ?? ''} → ${data.to_provider ?? ''}/${data.to_model ?? ''}`
+  } else {
+    if (record.type.startsWith('model.')) {
+      const model = [data.provider_id, data.model_id].filter(Boolean).join(' / ')
+      const usage =
+        record.type === 'model.call.completed'
+          ? ` · ${data.input_tokens ?? 0} 入 / ${data.output_tokens ?? 0} 出 token`
+          : ''
+      return `${model}${usage}`
+    }
+    if (record.type.startsWith('tool.'))
+      return `${data.tool_name ?? ''}${data.ok === false ? ' · 失败' : ''}`
+  }
+  return String(data.name ?? data.tool_name ?? data.status ?? data.reason ?? '')
+}
+
+function traceActivityCard(record, kind, expanded = false) {
+  const card = document.createElement('article')
+  card.className = `trace-card trace-${kind}`
+  card.dataset.traceId = record.eventId ?? record.observationId
+  if (record.type === 'error' || record.data?.ok === false) card.classList.add('trace-error')
+  const heading = document.createElement('div')
+  heading.className = 'trace-card-heading'
+  const title = document.createElement('strong')
+  title.textContent = traceEventNames[record.type] ?? record.type.replaceAll('_', ' ')
+  const time = document.createElement('time')
+  time.dateTime = record.timestamp
+  time.textContent = traceTime(record.timestamp)
+  heading.append(title, time)
+  const type = document.createElement('div')
+  type.className = 'trace-type'
+  type.textContent = `${kind === 'event' ? '运行事件' : '本地观测'} · ${record.type}`
+  const summary = traceSummary(record, kind)
+  card.append(heading, type)
+  if (summary) {
+    const preview = document.createElement('p')
+    preview.className = 'trace-summary'
+    preview.textContent = summary
+    card.append(preview)
+  }
+  const ids = [
+    record.turnId,
+    record.toolCallId,
+    record.elapsedMs !== undefined ? `${record.elapsedMs} ms` : null,
+  ].filter(Boolean)
+  if (ids.length) {
+    const context = document.createElement('div')
+    context.className = 'trace-context'
+    for (const value of ids) {
+      const chip = document.createElement('span')
+      chip.textContent = value
+      context.append(chip)
+    }
+    card.append(context)
+  }
+  card.append(traceDetails(record, expanded))
+  return card
+}
+
+function renderTraceActivity() {
+  const container = el('trace-activity')
+  const expanded = new Set(
+    [...container.querySelectorAll('.trace-card')]
+      .filter((card) => card.querySelector('.trace-details')?.open)
+      .map((card) => card.dataset.traceId),
+  )
+  container.replaceChildren()
+  const records = [
+    ...[...state.traceEvents.values()].map((value) => ({ kind: 'event', value })),
+    ...[...state.traceObservations.values()].map((value) => ({ kind: 'observation', value })),
+  ].sort((a, b) => {
+    const time = String(a.value.timestamp).localeCompare(String(b.value.timestamp))
+    return time || (a.value.sequence ?? 0) - (b.value.sequence ?? 0)
+  })
+  for (const record of records)
+    container.append(
+      traceActivityCard(
+        record.value,
+        record.kind,
+        expanded.has(record.value.eventId ?? record.value.observationId),
+      ),
+    )
+  if (records.length === 0) container.textContent = '暂无运行记录。发送消息后可在此追踪过程。'
+  renderTraceStats()
+}
+
+async function loadTrace() {
+  if (state.sessionId === null) return
+  const sessionId = state.sessionId
+  const projectId = state.projectId
+  try {
+    const payload = await api(`/api/sessions/${sessionId}/trace`)
+    if (state.sessionId !== sessionId || state.projectId !== projectId) return
+    for (const event of payload.events ?? []) state.traceEvents.set(event.eventId, event)
+    for (const record of payload.observations ?? [])
+      state.traceObservations.set(record.observationId, record)
+    if (state.viewMode === 'advanced') renderTraceActivity()
+  } catch (error) {
+    if (state.sessionId === sessionId && state.viewMode === 'advanced')
+      el('trace-activity').textContent = `读取过程记录失败：${error.message}`
+  }
+}
+
+function scheduleTraceRefresh() {
+  if (state.viewMode !== 'advanced' || state.traceRefreshTimer !== null) return
+  state.traceRefreshTimer = setTimeout(() => {
+    state.traceRefreshTimer = null
+    void loadTrace()
+  }, 350)
 }
 
 // ── 提交 ──────────────────────────────────────────────────────────
@@ -1815,6 +2171,7 @@ function handleFrame(frame) {
       // 锚点失效：**重建视图**再重订阅，而不是请求全量补发。
       appendNote('事件锚点已失效，正在重建视图…')
       state.lastEventId = null
+      resetTrace()
       void loadHistory().then(() => {
         sendFrame({ type: 'subscribe', sessionId: state.sessionId })
       })
@@ -1836,6 +2193,15 @@ function sendFrame(frame) {
 
 function handleEvent(event) {
   state.lastEventId = event.eventId
+  if (!state.traceEvents.has(event.eventId)) {
+    state.traceEvents.set(event.eventId, event)
+    if (state.viewMode === 'advanced') {
+      const activity = el('trace-activity')
+      if (state.traceEvents.size + state.traceObservations.size === 1) activity.replaceChildren()
+      activity.append(traceActivityCard(event, 'event'))
+      renderTraceStats()
+    }
+  }
   const data = event.data ?? {}
 
   switch (event.type) {
@@ -1844,6 +2210,7 @@ function handleEvent(event) {
       state.running.add(event.sessionId)
       setBusy(true)
       startLiveText(event.turnId)
+      void refreshTraceMessages().catch(() => undefined)
       if (
         state.sessions.some(
           (session) => session.id === event.sessionId && session.title === 'Web 会话',
@@ -1863,6 +2230,8 @@ function handleEvent(event) {
       return
     case 'tool_result':
       appendNote(`${data.ok ? '✓' : '✗'} ${data.name ?? ''} ${data.error_code ?? ''}`.trim())
+      void refreshTraceMessages().catch(() => undefined)
+      scheduleTraceRefresh()
       return
     case 'permission_required':
       void refreshPending().catch(() =>
@@ -1900,11 +2269,13 @@ function handleEvent(event) {
     }
     case 'turn_end':
       finishTurn(data, event.sessionId)
+      scheduleTraceRefresh()
       return
     case 'error':
       // ⚠️ `error` 同样是**终止信号**。只认 `turn_end` 的客户端会在这里挂住。
       appendNote(`错误：${data.message ?? ''}`, true)
       endTurn(event.sessionId)
+      scheduleTraceRefresh()
       return
     default:
       return
@@ -1961,6 +2332,7 @@ function finishTurn(result, sessionId) {
 
   endTurn(running)
   void refreshSessions().catch(() => undefined)
+  if (state.viewMode === 'advanced') void loadHistory().catch(() => undefined)
 }
 
 function endTurn(sessionId) {

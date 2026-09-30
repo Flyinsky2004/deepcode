@@ -43,6 +43,7 @@ import type { PendingApprovalView } from '../../app/approval-broker.js'
 import type { PendingUserInputView } from '../../app/user-input-broker.js'
 import type { AppPolicy } from '../../app/policy.js'
 import type { IdempotencyRecord } from '../../storage/types.js'
+import { sanitizeValue } from '../../observability/sanitize.js'
 
 import type { AuthService } from './auth.js'
 import {
@@ -59,6 +60,7 @@ import type { WebLogger } from './logger.js'
 import {
   redactSecrets,
   toConfigDto,
+  toEventDto,
   toHealthDto,
   toMessageDto,
   toPendingApprovalDto,
@@ -487,6 +489,17 @@ export class HttpRouter {
       if (method === 'GET') return this.#handleMessages(res, principalId, sessionId)
     }
 
+    // /api/sessions/:id/trace — 已持久化的事件与本地观测记录。
+    if (
+      segments.length === 4 &&
+      segments[0] === 'api' &&
+      segments[1] === 'sessions' &&
+      segments[3] === 'trace'
+    ) {
+      const sessionId = segments[2] as SessionId
+      if (method === 'GET') return this.#handleTrace(res, principalId, sessionId)
+    }
+
     // /api/commands
     if (method === 'GET' && url.pathname === '/api/commands')
       return sendJson(res, 200, {
@@ -599,6 +612,22 @@ export class HttpRouter {
     await this.#ctx.app.getSession(principalId, sessionId)
     const messages = await this.#ctx.app.chatStore.listMessages(sessionId)
     return sendJson(res, 200, { messages: messages.map(toMessageDto) })
+  }
+
+  async #handleTrace(
+    res: ServerResponse,
+    principalId: PrincipalId,
+    sessionId: SessionId,
+  ): Promise<void> {
+    await this.#ctx.app.getSession(principalId, sessionId)
+    const [events, observations] = await Promise.all([
+      this.#ctx.app.eventLog.list(sessionId),
+      this.#ctx.app.observationLog?.list({ sessionId }) ?? Promise.resolve([]),
+    ])
+    return sendJson(res, 200, {
+      events: events.map(toEventDto),
+      observations: observations.map((record) => sanitizeValue(record)),
+    })
   }
 
   /**

@@ -503,6 +503,46 @@ describe('会话与消息', () => {
     expect(body.messages.some((message) => message.role === 'user')).toBe(true)
   })
 
+  it('高级追踪返回会话事件与本地观测记录，并脱敏工具参数', async () => {
+    const h = await harness()
+    const sessionId = await h.newSession()
+    const secret = 'sk-ant-FAKE0123456789abcdefghijklmnop'
+    await h.app.eventLog.emit(sessionId, 'tool_use', {
+      id: 'tool-1',
+      name: 'bash',
+      input: { api_key: secret, command: 'pwd' },
+    })
+    await h.app.observationLog?.record({
+      type: 'tool.execution',
+      sessionId,
+      elapsedMs: 12,
+      data: { password: secret, ok: true },
+    })
+
+    const response = await h.fetch(`/api/sessions/${sessionId}/trace`)
+    expect(response.status).toBe(200)
+    const body = await readJson<{
+      events: { type: string; data: { input: { api_key: string } } }[]
+      observations: { type: string; elapsedMs: number; data: { password: string } }[]
+    }>(response)
+    expect(body.events[0]?.type).toBe('tool_use')
+    expect(body.events[0]?.data.input.api_key).toBe('[redacted]')
+    expect(body.observations[0]?.type).toBe('tool.execution')
+    expect(body.observations[0]?.elapsedMs).toBe(12)
+    expect(body.observations[0]?.data.password).toBe('[redacted]')
+    expect(JSON.stringify(body)).not.toContain(secret)
+  })
+
+  it('高级追踪不会暴露其他 principal 的会话', async () => {
+    const h = await harness()
+    const foreign = await h.app.chatStore.createConversation('别人的', '', '', 'other')
+    const response = await h.fetch(`/api/sessions/${foreign.id}/trace`)
+    expect(response.status).toBe(404)
+    expect((await readJson<{ error: { code: string } }>(response)).error.code).toBe(
+      ErrorCode.SESSION_NOT_FOUND,
+    )
+  })
+
   it('配置接口不泄露假密钥', async () => {
     const secret = 'sk-ant-LEAKME0123456789abcdef'
     const h = await harness({

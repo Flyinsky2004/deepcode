@@ -437,6 +437,10 @@ server 并行连接、故障相互隔离；远端工具以显式 map 注册为 `
 接入，不参与本地真相源。`aggregateTurnMetrics()` 从日志确定性聚合用量、成本、耗时、
 重试、回退与失败阶段；模型单价缺失时成本保持为 0，不伪造价格。
 
+Web 对话页支持右上角“普通 / 高级”视图切换。高级视图按时间线展示会话事件与本地观测
+记录，同时提供消息详情；各卡片可展开查看经过脱敏的完整字段。历史记录经会话归属校验
+读取，实时事件由已有 WebSocket 流追加。这是本地追踪界面，尚不向 Langfuse 上报。
+
 自动门禁：`pnpm test:quality` 跑 Phase 11 定向回归；`pnpm quality` 跑完整静态检查、
 全量测试与覆盖率。跨端用例让 CLI/直接调用、TUI reducer 与 Web DTO 消费同一事件流，
 并用两个 Anthropic-compatible provider/model 的离线夹具验证重试和 fallback。

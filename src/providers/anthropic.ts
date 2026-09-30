@@ -1,5 +1,3 @@
-import { readFile } from 'node:fs/promises'
-
 import { AgentError, ErrorCode, toAgentError } from '../core/errors.js'
 import { withTimeout } from '../core/abort.js'
 import {
@@ -13,24 +11,14 @@ import {
   type TokenUsage,
 } from '../core/provider.js'
 
-export interface SecretResolver {
-  resolve(ref: Provider['apiKeyRef']): Promise<string | undefined>
-}
+import { defaultSecretResolver, type SecretResolver } from './secrets.js'
+export type { SecretResolver } from './secrets.js'
 export interface AnthropicProviderOptions {
   readonly provider: Provider
   readonly resolveSecret?: SecretResolver
   readonly fetchImpl?: typeof fetch
   readonly timeoutMs?: number
   readonly apiVersion?: string
-}
-
-const defaultResolver: SecretResolver = {
-  async resolve(ref) {
-    if (ref.source === 'env') return process.env[ref.key]
-    if (ref.source === 'file') return (await readFile(ref.key, 'utf8')).trim()
-    if (ref.source === 'value') return ref.key
-    return undefined
-  },
 }
 
 export class AnthropicMessagesProvider implements ModelProvider {
@@ -43,7 +31,7 @@ export class AnthropicMessagesProvider implements ModelProvider {
 
   constructor(options: AnthropicProviderOptions) {
     this.provider = options.provider
-    this.resolveSecret = options.resolveSecret ?? defaultResolver
+    this.resolveSecret = options.resolveSecret ?? defaultSecretResolver
     this.fetchImpl = options.fetchImpl ?? fetch
     this.timeoutMs = options.timeoutMs ?? 120_000
     this.apiVersion = options.apiVersion ?? '2023-06-01'

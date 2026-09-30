@@ -75,7 +75,14 @@ import {
   type McpConnectionFactory,
   type McpServerConfig,
 } from '../mcp/index.js'
-import { LocalObservationLog } from '../observability/index.js'
+import { LocalObservationLog } from '../observability/local-log.js'
+import { CompositeObservationSink } from '../observability/composite.js'
+import {
+  LangfuseObservationSink,
+  langfuseOptionsFromConfig,
+  type LangfuseOptions,
+  type LangfuseStatus,
+} from '../observability/langfuse.js'
 
 export interface AgentApplicationOptions {
   readonly paths?: AppPaths
@@ -84,6 +91,8 @@ export interface AgentApplicationOptions {
   readonly mode?: PermissionMode
   readonly budget?: AgentBudget
   readonly maxTurns?: number
+  /** 缺省读取全局 config.json 中的 langfuse；false 显式关闭远端上报。 */
+  readonly langfuse?: LangfuseOptions | false
   /** 逐项覆盖 `DEFAULT_APP_POLICY`。配置文件里的 `policy.*` 优先于它。 */
   readonly policy?: Partial<AppPolicy>
   // ── 以下全部是测试注入点；缺省时由 `create()` 自建 ─
@@ -116,6 +125,7 @@ export class AgentApplication {
   readonly eventLog: EventLog
   readonly observationSink: ObservationSink
   readonly observationLog: LocalObservationLog | undefined
+  readonly langfuseStatus: LangfuseStatus
   readonly bus: EventBus
   readonly registry: ToolRegistry
   readonly executor: ToolExecutor
@@ -153,6 +163,7 @@ export class AgentApplication {
   readonly #reserved = new Set<SessionId>()
   #recovery: RecoverySnapshot | undefined
   #disposed = false
+  #shutdown: Promise<void> | undefined
 
   private constructor(options: {
     paths: AppPaths
@@ -164,6 +175,7 @@ export class AgentApplication {
     eventLog: EventLog
     observationSink: ObservationSink
     observationLog?: LocalObservationLog
+    langfuseStatus: LangfuseStatus
     bus: EventBus
     registry: ToolRegistry
     executor: ToolExecutor
@@ -191,6 +203,7 @@ export class AgentApplication {
     this.eventLog = options.eventLog
     this.observationSink = options.observationSink
     this.observationLog = options.observationLog
+    this.langfuseStatus = options.langfuseStatus
     this.bus = options.bus
     this.registry = options.registry
     this.executor = options.executor
@@ -236,11 +249,35 @@ export class AgentApplication {
 
     const eventLog = options.eventLog ?? new EventLog(`${paths.project_dir}/events`, clock)
     const bus = new EventBus({ log: eventLog, policy, clock })
-    const observationSink =
+    const localSink =
       options.observationSink ??
       new LocalObservationLog(`${paths.project_dir}/observability.ndjson`, clock)
-    const observationLog =
-      observationSink instanceof LocalObservationLog ? observationSink : undefined
+    const observationLog = localSink instanceof LocalObservationLog ? localSink : undefined
+    let observationSink: ObservationSink = localSink
+    let langfuseStatus: LangfuseStatus = { enabled: false, reason: '尚未配置 Langfuse' }
+    if (options.observationSink !== undefined) {
+      langfuseStatus = { enabled: false, reason: '由自定义 observationSink 接管' }
+    } else if (options.langfuse === false) {
+      langfuseStatus = { enabled: false, reason: '已显式禁用 Langfuse' }
+    } else {
+      try {
+        const langfuseOptions =
+          options.langfuse ?? (await langfuseOptionsFromConfig(config.langfuse))
+        if (langfuseOptions !== undefined) {
+          const remoteSink = new LangfuseObservationSink(langfuseOptions)
+          observationSink = new CompositeObservationSink([localSink, remoteSink])
+          langfuseStatus = { enabled: true, reason: '已启用', baseUrl: remoteSink.baseUrl }
+        } else if (config.langfuse !== undefined) {
+          langfuseStatus = {
+            enabled: false,
+            reason: config.langfuse.enabled ? 'Langfuse 凭据不可用' : 'Langfuse 已停用',
+            baseUrl: config.langfuse.baseUrl,
+          }
+        }
+      } catch {
+        langfuseStatus = { enabled: false, reason: 'Langfuse 配置或凭据不可用，继续使用本地日志' }
+      }
+    }
 
     // principal 要在 broker 之前确定：broker 的授权回调需要它来判断
     // "谁能解决这个会话的审批"。
@@ -354,6 +391,7 @@ export class AgentApplication {
       eventLog,
       observationSink,
       ...(observationLog === undefined ? {} : { observationLog }),
+      langfuseStatus,
       bus,
       registry,
       executor,
@@ -906,9 +944,25 @@ export class AgentApplication {
     this.#disposed = true
     for (const controller of this.#controllers.values()) controller.abort()
     this.subAgentManager.shutdown()
-    void this.mcpManager.shutdown()
+    const mcpShutdown = this.mcpManager.shutdown()
+    this.#shutdown = Promise.allSettled([
+      ...this.#inFlight.values(),
+      this.subAgentManager.waitForIdle(),
+      mcpShutdown,
+    ])
+      .then(async () => {
+        if (this.observationSink.shutdown !== undefined) await this.observationSink.shutdown()
+        else await this.observationSink.flush?.()
+      })
+      .catch(() => undefined)
     this.bus.close()
     this.eventLog.close()
+  }
+
+  /** 可等待的资源释放入口，包含 Langfuse 最终批次。 */
+  async shutdown(): Promise<void> {
+    this.dispose()
+    await this.#shutdown
   }
 
   get disposed(): boolean {

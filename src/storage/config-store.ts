@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto'
 import { AgentError, ErrorCode } from '../core/errors.js'
 import { ModelTier, type ModelProfile, type Provider, type SecretRef } from '../core/provider.js'
 import { type AppPaths } from './paths.js'
-import { type ConfigDocument, type StoredProvider, type TierAssignment } from './types.js'
+import {
+  type ConfigDocument,
+  type StoredLangfuse,
+  type StoredProvider,
+  type TierAssignment,
+} from './types.js'
 import { isRecord, readJsonObject, updateJsonAtomic } from './json-file.js'
 
 const VERSION = 1
@@ -31,6 +36,32 @@ function normalizeSecret(value: unknown): SecretRef {
     return { source: value['source'], key: asString(value['key']) }
   }
   return { source: 'env', key: asString(value) }
+}
+
+function validSecretRef(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    ['env', 'file', 'keychain', 'value'].includes(String(value['source'])) &&
+    typeof value['key'] === 'string' &&
+    value['key'].trim().length > 0
+  )
+}
+
+function normalizeLangfuse(value: unknown): StoredLangfuse | undefined {
+  if (
+    !isRecord(value) ||
+    !validSecretRef(value['publicKeyRef']) ||
+    !validSecretRef(value['secretKeyRef'])
+  )
+    return undefined
+  return {
+    enabled: asBool(value['enabled'], true),
+    baseUrl: asString(value['baseUrl'], 'https://cloud.langfuse.com').replace(/\/+$/u, ''),
+    publicKeyRef: normalizeSecret(value['publicKeyRef']),
+    secretKeyRef: normalizeSecret(value['secretKeyRef']),
+    ...(typeof value['environment'] === 'string' ? { environment: value['environment'] } : {}),
+    ...(typeof value['release'] === 'string' ? { release: value['release'] } : {}),
+  }
 }
 
 function normalizeProvider(value: unknown): StoredProvider | undefined {
@@ -126,6 +157,8 @@ function normalizeTier(value: unknown): TierAssignment | undefined {
 }
 
 function normalize(raw: Readonly<Record<string, unknown>>): ConfigDocument {
+  const { langfuse: rawLangfuse, ...otherFields } = raw
+  const langfuse = normalizeLangfuse(rawLangfuse)
   const version = typeof raw['schema_version'] === 'number' ? raw['schema_version'] : VERSION
   if (version > VERSION) {
     throw new AgentError({
@@ -161,11 +194,12 @@ function normalize(raw: Readonly<Record<string, unknown>>): ConfigDocument {
       )
     : {}
   return {
-    ...raw,
+    ...otherFields,
     schema_version: VERSION,
     llm_channels: Array.isArray(raw['llm_channels']) ? raw['llm_channels'].filter(isRecord) : [],
     llm_models: Array.isArray(raw['llm_models']) ? raw['llm_models'].filter(isRecord) : [],
     app_settings: appSettings,
+    ...(langfuse === undefined ? {} : { langfuse }),
     ...(Array.isArray(raw['mcp_servers']) ? { mcp_servers: raw['mcp_servers'] } : {}),
     providers,
     model_profiles: profiles,
@@ -248,6 +282,47 @@ export class ConfigStore {
         ...doc.tier_assignments.filter((a) => a.tier !== assignment.tier),
         assignment,
       ],
+    }))
+  }
+
+  /** 单次原子写入 Langfuse 配置，与 provider 的持久化路径一致。 */
+  async setLangfuse(configuration: StoredLangfuse): Promise<ConfigDocument> {
+    let url: URL
+    try {
+      url = new URL(configuration.baseUrl)
+    } catch {
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'Langfuse baseUrl 必须是 http(s) 根地址',
+        source: 'config',
+      })
+    }
+    if (
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      /\/api\/public\/otel(?:\/v1\/traces)?\/?$/u.test(url.pathname)
+    )
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'Langfuse baseUrl 必须是 http(s) 根地址且不能包含凭据或 OTLP endpoint',
+        source: 'config',
+      })
+    if (
+      typeof configuration.enabled !== 'boolean' ||
+      !validSecretRef(configuration.publicKeyRef) ||
+      !validSecretRef(configuration.secretKeyRef)
+    )
+      throw new AgentError({
+        code: ErrorCode.VALIDATION_FAILED,
+        message: 'Langfuse 配置需要有效的凭据引用和启用状态',
+        source: 'config',
+      })
+    return this.update((doc) => ({
+      ...doc,
+      langfuse: { ...configuration, baseUrl: url.toString().replace(/\/+$/u, '') },
     }))
   }
 

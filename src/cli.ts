@@ -192,12 +192,12 @@ async function runWebUi(options: ParsedCliArgs): Promise<number> {
       ...(options.cors === undefined ? {} : { cors: options.cors }),
     })
   } catch (error) {
-    app.dispose()
+    await app.shutdown()
     throw error
   }
 
   if (isStartupFailure(started)) {
-    app.dispose()
+    await app.shutdown()
     process.stderr.write(`启动失败 [${started.code}]：${started.reason}\n`)
     return EXIT_FAILURE
   }

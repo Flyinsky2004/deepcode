@@ -602,7 +602,7 @@ export class WebServer {
       Promise.all([...this.#projects.values()].map(({ app }) => app.flush())),
       this.#policy.shutdownPersistMs,
     )
-    const flushTimedOut = flushed === 'timeout'
+    let flushTimedOut = flushed === 'timeout'
 
     // ⑤ 释放组合根。放在 flush 之后——dispose 会关掉事件日志。
     for (const [id, { app }] of this.#projects) {
@@ -613,6 +613,15 @@ export class WebServer {
         this.#logger.warn(`[web-ui] dispose 失败：${String(error)}`)
       }
     }
+    const shutdown = await this.#withTimeout(
+      Promise.all(
+        [...this.#projects]
+          .filter(([id]) => id !== this.#defaultProjectId || this.#disposeApplication)
+          .map(([, { app }]) => app.shutdown()),
+      ),
+      this.#policy.shutdownPersistMs,
+    )
+    if (shutdown === 'timeout') flushTimedOut = true
 
     // ⑥ WebSocket 1001。
     for (const { stream } of this.#projects.values()) stream.closeAll()

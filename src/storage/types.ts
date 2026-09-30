@@ -4,7 +4,7 @@ import type { SkillGuardRef, PermissionMode } from '../core/tool.js'
 import type { SkillTurnSnapshot } from '../skills/models.js'
 import type { WorkingMemory } from '../core/context.js'
 import type { Conversation, Message } from '../core/models.js'
-import type { ModelProfile, ModelRef, ModelTier, Provider } from '../core/provider.js'
+import type { ModelProfile, ModelRef, ModelTier, Provider, SecretRef } from '../core/provider.js'
 import type {
   PermissionRequest,
   PermissionResolution,
@@ -29,6 +29,16 @@ export interface StoredProvider extends Provider {
   readonly enabled: boolean
 }
 
+/** Langfuse 与模型提供商共用 SecretRef，不在日志或 UI 回传凭据。 */
+export interface StoredLangfuse {
+  readonly enabled: boolean
+  readonly baseUrl: string
+  readonly publicKeyRef: SecretRef
+  readonly secretKeyRef: SecretRef
+  readonly environment?: string
+  readonly release?: string
+}
+
 /** 全局配置文件。旧字段原样保留，新字段是向后兼容扩展。 */
 export interface ConfigDocument {
   readonly schema_version: number
@@ -36,6 +46,7 @@ export interface ConfigDocument {
   readonly llm_models: readonly Readonly<Record<string, unknown>>[]
   readonly app_settings: Readonly<Record<string, string>>
   readonly mcp_servers?: readonly unknown[]
+  readonly langfuse?: StoredLangfuse
   readonly providers: readonly StoredProvider[]
   readonly model_profiles: readonly ModelProfile[]
   readonly tier_assignments: readonly TierAssignment[]

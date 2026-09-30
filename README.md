@@ -134,6 +134,58 @@ provider 改为：
 支持后可在 `~/.deepcode/config.json` 的对应 model profile 中显式调整。`/api` 面板只显示
 “密钥就绪/等待环境变量”，不会读取或回显密钥内容。
 
+## Langfuse
+
+Langfuse 与模型提供商使用同一份 `~/.deepcode/config.json` 和 `SecretRef` 凭据机制。
+在 Web「设置 → Langfuse」填写服务根地址、Public key 和 Secret key 的凭据来源与引用，
+保存后重启。表单支持与供应商相同的环境变量、文件路径和 Keychain 选项；Keychain 目前
+尚未实现，选择它时凭据状态显示不可用。编辑已有配置时引用留空会保留原值。
+
+也可以在 TUI 或 Web 命令入口运行：
+
+```text
+/langfuse configure https://cloud.langfuse.com
+/langfuse
+/langfuse off
+/langfuse on
+```
+
+`configure` 默认保存 `DEEPCODE_LANGFUSE_PUBLIC_KEY` 和 `DEEPCODE_LANGFUSE_SECRET_KEY`
+两个环境变量引用；可用 `/langfuse configure <base-url> <public-key-env> <secret-key-env>`
+指定已有的环境变量名。命令不接收明文凭据。地址、启用状态、环境和版本都保存在全局配置，
+更改后重启生效。未保存 Langfuse 配置时，单独设置 `LANGFUSE_*` 环境变量不会启用上报。
+
+配置的持久化形态与 provider 类似：
+
+```json
+"langfuse": {
+  "enabled": true,
+  "baseUrl": "https://cloud.langfuse.com",
+  "publicKeyRef": { "source": "env", "key": "DEEPCODE_LANGFUSE_PUBLIC_KEY" },
+  "secretKeyRef": { "source": "env", "key": "DEEPCODE_LANGFUSE_SECRET_KEY" },
+  "environment": "development",
+  "release": "local"
+}
+```
+
+与模型凭据相同，本地配置支持 `source: "value"` 和 `source: "file"`。
+选择本地明文模式时，停止 DeepCode 后在 `config.json` 中把引用改为
+`{ "source": "value", "key": "实际密钥" }`；Web 和命令不会回显密钥。
+
+DeepCode 使用 [Langfuse OpenTelemetry exporter](https://langfuse.com/docs/observability/sdk/overview)，
+每轮任务创建一个 trace，模型调用记录模型、参数、耗时、token 用量及已知费用；工具调用
+记录脱敏后的输入、结果状态和输出长度。完整模型请求、回复和工具输出正文不额外上传。
+远端数据沿用本地日志的脱敏规则，长字段按 8,000 字符生成摘要。子代理通过 span 关联父轮次，
+后台子代理在父轮次完成后仍保留关联。应用正常关闭时冲刷最终批次。
+
+`/langfuse` 同时展示当前上报状态与已保存配置的凭据就绪状态；“已启用”表示 exporter
+已装配，不代表已验证服务端连接。配置错误或远端故障不会中断 Agent，原有本地
+`observability.ndjson` 日志继续保留。
+
+嵌入式调用仍可传 `AgentApplication.create({ langfuse: { publicKey, secretKey, baseUrl } })`，
+或用 `langfuse: false` 显式禁用。自定义 `observationSink` 会接管全部观测出口。
+宿主释放应用时可 `await app.shutdown()` 等待 exporter 关闭。
+
 ## Skills
 
 在工作区 `skills/<名称>/SKILL.md` 或用户目录 `~/.deepcode/skills/<名称>/SKILL.md`
@@ -257,7 +309,7 @@ src/
   skills/       # Skill 系统（Phase 8）
   subagents/    # 子代理（Phase 9）
   mcp/          # MCP 客户端（Phase 10）
-  observability/# 本地结构化日志、脱敏与指标聚合（Phase 11）
+  observability/# 本地结构化日志、脱敏、指标聚合与 Langfuse exporter
   clients/      # 表现层：TUI / CLI / Web UI（Phase 7+）
 tests/          # 与 src 同构的测试
 ```

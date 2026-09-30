@@ -371,14 +371,16 @@
               <p class="eyebrow">PREFERENCES</p>
               <h1 id="settings-title">设置</h1>
               <p class="muted">
-                管理供应商、模型、运行阈值和 MCP 服务。全局配置位于 ~/.deepcode/config.json。
+                管理供应商、模型、Langfuse、运行阈值和 MCP 服务。全局配置位于
+                ~/.deepcode/config.json。
               </p>
             </div>
           </div>
           <div class="settings-layout">
             <nav class="settings-nav" aria-label="设置章节">
               <a href="#providers">供应商与模型</a><a href="#tier-form">模型档位</a
-              ><a href="#language-form">偏好与阈值</a><a href="#mcp">MCP 服务</a>
+              ><a href="#langfuse-form">Langfuse</a><a href="#language-form">偏好与阈值</a
+              ><a href="#mcp">MCP 服务</a>
             </nav>
             <div class="settings-content">
               <p id="settings-status" role="status" class="hidden settings-status"></p>
@@ -524,6 +526,102 @@
                   class="sm:col-span-3 rounded-lg border border-sky-600 px-3 py-2 text-sm text-sky-200 hover:bg-sky-950"
                 >
                   保存档位
+                </button>
+              </form>
+              <form
+                id="langfuse-form"
+                class="grid gap-3 rounded-xl border border-slate-700 p-4 sm:grid-cols-2"
+              >
+                <div class="sm:col-span-2">
+                  <h3 class="font-semibold">Langfuse</h3>
+                  <p id="langfuse-config-status" class="text-sm text-slate-400"></p>
+                  <p class="text-xs text-slate-400">保存到全局配置，重启 DeepCode 后生效。</p>
+                </div>
+                <label class="sm:col-span-2 space-y-1 text-sm"
+                  >服务根地址
+                  <input
+                    name="baseUrl"
+                    type="url"
+                    required
+                    value="https://cloud.langfuse.com"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  />
+                </label>
+                <label class="space-y-1 text-sm"
+                  >Public key 来源
+                  <select
+                    name="publicKeySource"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  >
+                    <option value="env">环境变量</option>
+                    <option value="file">文件路径</option>
+                    <option value="keychain">Keychain</option>
+                  </select>
+                </label>
+                <label class="space-y-1 text-sm"
+                  >Public key 引用
+                  <input
+                    name="publicKeyKey"
+                    placeholder="DEEPCODE_LANGFUSE_PUBLIC_KEY"
+                    aria-describedby="langfuse-credential-hint"
+                    autocomplete="off"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  />
+                </label>
+                <label class="space-y-1 text-sm"
+                  >Secret key 来源
+                  <select
+                    name="secretKeySource"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  >
+                    <option value="env">环境变量</option>
+                    <option value="file">文件路径</option>
+                    <option value="keychain">Keychain</option>
+                  </select>
+                </label>
+                <label class="space-y-1 text-sm"
+                  >Secret key 引用
+                  <input
+                    name="secretKeyKey"
+                    placeholder="DEEPCODE_LANGFUSE_SECRET_KEY"
+                    aria-describedby="langfuse-credential-hint"
+                    autocomplete="off"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  />
+                </label>
+                <p id="langfuse-credential-hint" class="sm:col-span-2 text-xs text-slate-400">
+                  填写环境变量名或凭据文件路径。留空保留已保存的引用；密钥内容不会回显。
+                </p>
+                <label class="space-y-1 text-sm"
+                  >环境
+                  <input
+                    name="environment"
+                    value="development"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  />
+                </label>
+                <label class="space-y-1 text-sm"
+                  >版本
+                  <input
+                    name="release"
+                    value="local"
+                    class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                  />
+                </label>
+                <label class="sm:col-span-2 flex items-center gap-2 text-sm"
+                  ><input name="enabled" type="checkbox" checked /> 启用远程上报</label
+                >
+                <p
+                  id="langfuse-form-feedback"
+                  role="status"
+                  aria-live="polite"
+                  class="sm:col-span-2 text-sm text-slate-400"
+                ></p>
+                <button
+                  type="submit"
+                  class="sm:col-span-2 rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium hover:bg-sky-500"
+                >
+                  保存 Langfuse
                 </button>
               </form>
               <form

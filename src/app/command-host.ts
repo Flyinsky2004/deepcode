@@ -6,8 +6,6 @@
  * （`tests/commands/*` 用的就是纯假的 host）。
  */
 
-import { statSync } from 'node:fs'
-
 import { AgentError, ErrorCode } from '../core/errors.js'
 import type { PrincipalId, SessionId, TurnId } from '../core/ids.js'
 import type { ModelTier } from '../core/provider.js'
@@ -21,30 +19,7 @@ import type {
 import { CommandResultCode } from '../commands/types.js'
 import type { AgentApplication } from './agent-application.js'
 
-/**
- * 判断某个 `SecretRef` 是否**可用**。
- *
- * `parts/09` §9.1：「API key 不得出现在日志、事件、导出文件、URL 或前端响应中」
- * ——所以这里**只判断可用性，绝不读取明文**。
- */
-function secretAvailable(ref: { source: string; key: string } | undefined): boolean {
-  if (!ref) return false
-  if (ref.source === 'value') return ref.key.trim().length > 0
-  if (ref.source === 'env') {
-    const value = process.env[ref.key]
-    return typeof value === 'string' && value.length > 0
-  }
-  if (ref.source === 'file') {
-    try {
-      return statSync(ref.key).size > 0
-    } catch {
-      return false
-    }
-  }
-  // keychain 尚未实现 —— 返回 false 而不是假装可用，否则 /workwith 会放行
-  // 一个注定连不上的模型。
-  return false
-}
+import { secretAvailable } from '../providers/secrets.js'
 
 export class CommandHostAdapter implements CommandHost {
   readonly #app: AgentApplication
@@ -215,6 +190,48 @@ export class CommandHostAdapter implements CommandHost {
 
   listMcpServers() {
     return Promise.resolve(this.#app.listMcpServers())
+  }
+
+  async getLangfuseStatus() {
+    const configuration = (await this.#app.configStore.read()).langfuse
+    return {
+      ...this.#app.langfuseStatus,
+      ...(configuration === undefined
+        ? {}
+        : {
+            configuration: {
+              enabled: configuration.enabled,
+              baseUrl: configuration.baseUrl,
+              hasPublicKey: secretAvailable(configuration.publicKeyRef),
+              hasSecretKey: secretAvailable(configuration.secretKeyRef),
+            },
+          }),
+    }
+  }
+
+  async configureLangfuse(input: {
+    readonly baseUrl: string
+    readonly publicKeyEnv: string
+    readonly secretKeyEnv: string
+  }): Promise<void> {
+    await this.#app.configStore.setLangfuse({
+      enabled: true,
+      baseUrl: input.baseUrl,
+      publicKeyRef: { source: 'env', key: input.publicKeyEnv },
+      secretKeyRef: { source: 'env', key: input.secretKeyEnv },
+    })
+  }
+
+  async setLangfuseEnabled(enabled: boolean): Promise<void> {
+    await this.#app.configStore.update((doc) => {
+      if (doc.langfuse === undefined)
+        throw new AgentError({
+          code: ErrorCode.VALIDATION_FAILED,
+          message: '请先用 /langfuse configure 配置 Langfuse',
+          source: 'app',
+        })
+      return { ...doc, langfuse: { ...doc.langfuse, enabled } }
+    })
   }
 
   reconnectMcpServer(serverId: string) {

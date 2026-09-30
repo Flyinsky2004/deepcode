@@ -4,7 +4,7 @@ import { loadAppPolicy, POLICY_SETTING_KEYS } from '../../app/policy.js'
 import type { AgentApplication } from '../../app/agent-application.js'
 import { AgentError, ErrorCode } from '../../core/errors.js'
 import { ModelTier } from '../../core/provider.js'
-import type { ModelProfile } from '../../core/provider.js'
+import type { ModelProfile, SecretRef } from '../../core/provider.js'
 import type { StoredProvider, TierAssignment } from '../../storage/types.js'
 import { parseMcpServerConfigs } from '../../mcp/config.js'
 import { isRecord } from '../../storage/json-file.js'
@@ -24,12 +24,46 @@ function positiveInteger(value: unknown, name: string): number {
   return value
 }
 
+function credentialRef(
+  body: Readonly<Record<string, unknown>>,
+  name: string,
+  current: SecretRef | undefined,
+): SecretRef {
+  const key = body[`${name}Key`]
+  if (
+    (key === undefined || (typeof key === 'string' && key.trim() === '')) &&
+    current !== undefined
+  )
+    return current
+  const source = body[`${name}Source`]
+  if (source !== 'env' && source !== 'file' && source !== 'keychain')
+    invalid('凭据来源只能是 env、file 或 keychain')
+  return { source, key: string(key, '凭据引用') }
+}
+
 /** 结构化配置操作；任何响应都只返回脱敏后的 ConfigDto。 */
 export async function applyConfigAction(
   app: AgentApplication,
   body: Readonly<Record<string, unknown>>,
 ): Promise<void> {
   switch (body['action']) {
+    case 'langfuse_set': {
+      if (typeof body['enabled'] !== 'boolean') invalid('enabled 必须是布尔值')
+      const current = (await app.configStore.read()).langfuse
+      const environment =
+        typeof body['environment'] === 'string' ? body['environment'].trim() : current?.environment
+      const release =
+        typeof body['release'] === 'string' ? body['release'].trim() : current?.release
+      await app.configStore.setLangfuse({
+        enabled: body['enabled'],
+        baseUrl: string(body['baseUrl'], 'Langfuse 根地址'),
+        publicKeyRef: credentialRef(body, 'publicKey', current?.publicKeyRef),
+        secretKeyRef: credentialRef(body, 'secretKey', current?.secretKeyRef),
+        ...(environment ? { environment } : {}),
+        ...(release ? { release } : {}),
+      })
+      return
+    }
     case 'language': {
       const language = body['language']
       if (language !== 'zh' && language !== 'en') invalid('language 必须是 zh 或 en')

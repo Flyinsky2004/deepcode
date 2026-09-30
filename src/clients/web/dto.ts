@@ -396,6 +396,14 @@ export interface ConfigDto {
   readonly mcpServerCount: number
   readonly mcpServers: readonly { name: string; transport: string; enabled: boolean }[]
   readonly tierCount: number
+  readonly langfuse: {
+    readonly enabled: boolean
+    readonly baseUrl: string
+    readonly environment: string
+    readonly release: string
+    readonly hasPublicKeyRef: boolean
+    readonly hasSecretKeyRef: boolean
+  } | null
 }
 
 /**
@@ -415,6 +423,17 @@ export function toConfigDto(config: ConfigDocument): ConfigDto {
 
   return {
     schemaVersion: config.schema_version,
+    langfuse:
+      config.langfuse === undefined
+        ? null
+        : {
+            enabled: config.langfuse.enabled,
+            baseUrl: config.langfuse.baseUrl,
+            environment: config.langfuse.environment ?? 'development',
+            release: config.langfuse.release ?? 'local',
+            hasPublicKeyRef: true,
+            hasSecretKeyRef: true,
+          },
     language: settings['language'] === 'en' ? 'en' : 'zh',
     availableTiers: Object.values(ModelTier),
     policySettingKeys: POLICY_SETTING_KEYS,

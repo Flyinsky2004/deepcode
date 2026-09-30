@@ -1,17 +1,4 @@
-/**
- * 内置命令注册。
- *
- * ## 关于"未实现子系统"的处理原则
- *
- * 尚未实现的远程 exporter 命令会返回 `not_available` 并说明原因，
- * 而不是：
- *
- * - 返回假数据（用户会以为功能可用）；
- * - 返回空列表假装成功（同上，且更难排查）；
- * - 写一个没有任何消费者的配置开关（产生"我开了但没生效"的误导）。
- *
- * 这与 `CLAUDE.md` 的缺陷协议同源：**不要静默地"顺手做好"**。
- */
+/** 内置命令注册：三端共用，按实际子系统状态返回结果。 */
 
 import { z } from 'zod'
 
@@ -28,41 +15,7 @@ import {
   createThinkingCommand,
 } from './model-preferences.js'
 import { createWorkwithCommand } from './workwith.js'
-
-/** 生成一条"诚实的降级"命令。 */
-function unavailableCommand(input: {
-  readonly name: string
-  readonly description: string
-  readonly subsystem: string
-  readonly phase: string
-  /** 仍可只读展示的已配置项（不假装它们已生效）。 */
-  readonly listConfigured?: (
-    host: Parameters<CommandDefinition['execute']>[0]['host'],
-  ) => Promise<string>
-}): CommandDefinition {
-  return {
-    name: input.name,
-    description: input.description,
-    parameters: { positionals: [] },
-    interrupt: 'never',
-    permission: { kind: 'always' },
-    auditEvent: 'command_received',
-    idempotency: { kind: 'read-only' },
-    persistResult: true,
-    execute: async (ctx): Promise<CommandResult> => {
-      const extra = input.listConfigured === undefined ? '' : await input.listConfigured(ctx.host)
-      return {
-        ok: false,
-        code: CommandResultCode.NOT_AVAILABLE,
-        errorCode: ErrorCode.COMMAND_NOT_AVAILABLE,
-        text:
-          `${input.name} 依赖的「${input.subsystem}」子系统尚未实现（${input.phase}）。` +
-          (extra === '' ? '该命令当前不产生任何效果。' : `\n\n${extra}`),
-        data: { subsystem: input.subsystem, phase: input.phase },
-      }
-    },
-  }
-}
+import { createLangfuseCommand } from './langfuse.js'
 
 /** `/skills`：读取当前 registry 的实际快照；无注册表时明确降级。 */
 function skillsCommand(): CommandDefinition {
@@ -333,16 +286,9 @@ export function createBuiltinCommandRegistry(): CommandRegistry {
     createEffortCommand(),
     createContextModeCommand(),
 
-    // `/skills`、`/mcp` 已接入真实子系统；`/langfuse` 仍只代表尚未实现的
-    // 远程 exporter，因此继续诚实降级，绝不假装成功。
     skillsCommand(),
     mcpCommand(),
-    unavailableCommand({
-      name: 'langfuse',
-      description: '切换可观测性上报',
-      subsystem: '可观测性',
-      phase: 'Phase 11',
-    }),
+    createLangfuseCommand(),
     // `/api` 只写环境变量形式的 SecretRef，命令参数中没有明文 key 槽位。
     createApiCommand(),
   ])
@@ -350,3 +296,4 @@ export function createBuiltinCommandRegistry(): CommandRegistry {
 }
 
 export { createApiCommand } from './api.js'
+export { createLangfuseCommand } from './langfuse.js'

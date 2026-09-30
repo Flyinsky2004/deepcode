@@ -257,6 +257,25 @@ export interface CommandHost {
     readonly checksum: string
   }>
 
+  /** 当前远端 exporter 状态，不包含凭据。 */
+  getLangfuseStatus?(): Promise<{
+    readonly enabled: boolean
+    readonly reason: string
+    readonly baseUrl?: string
+    readonly configuration?: {
+      readonly enabled: boolean
+      readonly baseUrl: string
+      readonly hasPublicKey: boolean
+      readonly hasSecretKey: boolean
+    }
+  }>
+  configureLangfuse?(input: {
+    readonly baseUrl: string
+    readonly publicKeyEnv: string
+    readonly secretKeyEnv: string
+  }): Promise<void>
+  setLangfuseEnabled?(enabled: boolean): Promise<void>
+
   /** 当前 MCP 连接与工具目录状态。 */
   listMcpServers?(): Promise<
     readonly {

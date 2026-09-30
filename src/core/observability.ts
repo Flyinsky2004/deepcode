@@ -37,6 +37,8 @@ export interface ObservationSink {
   record(input: ObservationInput): Promise<void>
   /** 优雅关闭与测试断言前等待已接受记录全部落定。 */
   flush?(): Promise<void>
+  /** 停止接受记录并释放 exporter；调用前应等待活动 turn 结束。 */
+  shutdown?(): Promise<void>
 }
 
 /** 显式关闭观测时使用；避免在业务代码里散落可选链与分支。 */

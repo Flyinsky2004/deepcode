@@ -176,7 +176,17 @@ export class TuiController {
     this.#subscription?.unsubscribe()
     this.#subscription = undefined
     await this.#app.flush().catch(() => undefined)
-    this.#app.dispose()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        this.#app.shutdown(),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, this.#app.policy.shutdownPersistMs)
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   #sessionIds(): readonly SessionId[] {

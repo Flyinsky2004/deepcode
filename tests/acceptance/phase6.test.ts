@@ -521,7 +521,7 @@ describe('Phase 6 验收：命令表与诚实降级', () => {
     }
   })
 
-  it('MCP 与安全版 /api 已实现，Langfuse exporter 仍诚实降级', async () => {
+  it('MCP、安全版 /api 与 Langfuse 状态查询均接入实际子系统', async () => {
     const { run } = await build()
     const mcp = await run('/mcp')
     expect(mcp.ok).toBe(true)
@@ -532,10 +532,9 @@ describe('Phase 6 验收：命令表与诚实降级', () => {
     expect(api.code).toBe(CommandResultCode.PANEL)
 
     const langfuse = await run('/langfuse')
-    expect(langfuse.ok).toBe(false)
-    expect(langfuse.code).toBe(CommandResultCode.NOT_AVAILABLE)
-    expect(langfuse.errorCode).toBe('COMMAND_NOT_AVAILABLE')
-    // 必须说明原因，而不是一句"失败"
-    expect(langfuse.text.length).toBeGreaterThan(10)
+    expect(langfuse.ok).toBe(true)
+    expect(langfuse.code).toBe(CommandResultCode.PANEL)
+    expect(langfuse.data).toMatchObject({ enabled: false })
+    expect(langfuse.text).toContain('/langfuse configure')
   })
 })

@@ -1,3 +1,5 @@
 export * from './local-log.js'
 export * from './metrics.js'
 export * from './sanitize.js'
+export * from './composite.js'
+export * from './langfuse.js'

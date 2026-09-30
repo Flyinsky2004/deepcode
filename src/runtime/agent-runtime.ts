@@ -531,6 +531,17 @@ export class AgentRuntime {
       return result
     }
     try {
+      await this.observe({
+        type: 'turn.started',
+        sessionId,
+        turnId,
+        data: {
+          principal_id: this.options.principalId,
+          turn_number: turnNumber,
+          resumed: persisted !== undefined,
+          agent_type: this.options.agentType ?? '',
+        },
+      })
       if (phase === TurnPhase.STARTING || phase === TurnPhase.COMPACTING)
         await transition(TurnPhase.BUILDING_CONTEXT, 'start')
       else if (phase === TurnPhase.AWAITING_USER_INPUT)

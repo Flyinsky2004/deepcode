@@ -999,6 +999,22 @@ async function loadSettings() {
   }
   const selectedTier = config.tiers.find((item) => item.tier === tierSelect.value)
   if (selectedTier) modelSelect.value = `${selectedTier.providerId}/${selectedTier.modelId}`
+  const langfuseForm = el('langfuse-form')
+  const langfuse = config.langfuse
+  langfuseForm.elements.namedItem('baseUrl').value =
+    langfuse?.baseUrl ?? 'https://cloud.langfuse.com'
+  langfuseForm.elements.namedItem('environment').value = langfuse?.environment ?? 'development'
+  langfuseForm.elements.namedItem('release').value = langfuse?.release ?? 'local'
+  langfuseForm.elements.namedItem('enabled').checked = langfuse?.enabled ?? true
+  for (const key of ['publicKey', 'secretKey']) {
+    const field = langfuseForm.elements.namedItem(`${key}Key`)
+    field.required = langfuse === null
+    field.value = ''
+  }
+  el('langfuse-config-status').textContent =
+    langfuse === null
+      ? '尚未配置。'
+      : `已保存 · ${langfuse.enabled ? '启用' : '停用'} · 凭据引用已配置`
   el('settings-language').value = config.language
   const policySelect = el('policy-key')
   policySelect.replaceChildren()
@@ -1084,6 +1100,42 @@ el('provider-form').addEventListener('submit', (event) => {
     },
     '供应商与模型已添加。',
   )
+})
+el('langfuse-form').addEventListener('submit', (event) => {
+  event.preventDefault()
+  const formNode = event.currentTarget
+  const form = new globalThis.FormData(formNode)
+  const button = formNode.querySelector('button[type="submit"]')
+  const feedback = el('langfuse-form-feedback')
+  button.disabled = true
+  button.textContent = '保存中…'
+  feedback.textContent = '正在保存配置…'
+  void (async () => {
+    try {
+      await api('/api/config', {
+        method: 'POST',
+        idempotencyKey: crypto.randomUUID(),
+        body: {
+          action: 'langfuse_set',
+          baseUrl: form.get('baseUrl'),
+          enabled: form.has('enabled'),
+          publicKeySource: form.get('publicKeySource'),
+          publicKeyKey: form.get('publicKeyKey'),
+          secretKeySource: form.get('secretKeySource'),
+          secretKeyKey: form.get('secretKeyKey'),
+          environment: form.get('environment'),
+          release: form.get('release'),
+        },
+      })
+      await loadSettings()
+      feedback.textContent = 'Langfuse 配置已保存，重启 DeepCode 后生效。'
+    } catch (error) {
+      feedback.textContent = `保存失败：${error.message}`
+    } finally {
+      button.disabled = false
+      button.textContent = '保存 Langfuse'
+    }
+  })()
 })
 el('model-form').addEventListener('submit', (event) => {
   event.preventDefault()

@@ -143,6 +143,82 @@ describe('Web 项目与配置', () => {
     expect(invalidPath.status).toBe(400)
   })
 
+  it('Langfuse 与供应商共用配置入口，保存、停用和读回不会暴露凭据引用', async () => {
+    const h = await harness()
+    const added = await post(h, '/api/config', {
+      action: 'langfuse_set',
+      enabled: true,
+      baseUrl: 'http://localhost:3000/',
+      publicKeySource: 'env',
+      publicKeyKey: 'LANGFUSE_PRIVATE_REFERENCE_FOR_TEST',
+      secretKeySource: 'file',
+      secretKeyKey: '/private/secret/langfuse-test.txt',
+      environment: 'test',
+      release: 'v2',
+    })
+    expect(added.status).toBe(200)
+    const view = await readJson<{ langfuse: { enabled: boolean; baseUrl: string } }>(added)
+    expect(view.langfuse).toMatchObject({
+      enabled: true,
+      baseUrl: 'http://localhost:3000',
+      environment: 'test',
+      release: 'v2',
+    })
+    expect(JSON.stringify(view)).not.toContain('LANGFUSE_PRIVATE_REFERENCE_FOR_TEST')
+    expect(JSON.stringify(view)).not.toContain('/private/secret/langfuse-test.txt')
+    expect((await h.app.configStore.read()).langfuse).toMatchObject({
+      secretKeyRef: { source: 'file', key: '/private/secret/langfuse-test.txt' },
+    })
+    const changed = await post(h, '/api/config', {
+      action: 'langfuse_set',
+      enabled: false,
+      baseUrl: 'http://localhost:3000',
+      publicKeySource: 'env',
+      publicKeyKey: '',
+      secretKeySource: 'env',
+      secretKeyKey: '',
+    })
+    expect(changed.status).toBe(200)
+    expect((await h.app.configStore.read()).langfuse).toMatchObject({
+      enabled: false,
+      secretKeyRef: { source: 'file', key: '/private/secret/langfuse-test.txt' },
+    })
+    const get = await readJson<{ langfuse: { enabled: boolean } }>(await h.fetch('/api/config'))
+    expect(get.langfuse.enabled).toBe(false)
+    expect(JSON.stringify(get)).not.toContain('LANGFUSE_PRIVATE_REFERENCE_FOR_TEST')
+  })
+
+  it('Langfuse Web 配置拒绝明文凭据、无效地址和缺失引用，旧配置保持完整', async () => {
+    const h = await harness()
+    const existing = {
+      enabled: false,
+      baseUrl: 'https://example.com',
+      publicKeyRef: { source: 'value' as const, key: 'pk-lf-private-public' },
+      secretKeyRef: { source: 'value' as const, key: 'sk-lf-private-secret' },
+    }
+    await h.app.configStore.setLangfuse(existing)
+    const dto = await readJson(await h.fetch('/api/config'))
+    expect(JSON.stringify(dto)).not.toContain('sk-lf-private-secret')
+    for (const invalid of [
+      { publicKeySource: 'value', publicKeyKey: 'raw-key' },
+      { baseUrl: 'https://user:password@example.com' },
+      { enabled: 'true' },
+    ]) {
+      const response = await post(h, '/api/config', {
+        action: 'langfuse_set',
+        enabled: true,
+        baseUrl: 'https://example.com',
+        publicKeySource: 'env',
+        publicKeyKey: 'PUBLIC',
+        secretKeySource: 'env',
+        secretKeyKey: 'SECRET',
+        ...invalid,
+      })
+      expect(response.status).toBe(400)
+      expect((await h.app.configStore.read()).langfuse).toEqual(existing)
+    }
+  })
+
   it('WebSocket 按所选项目订阅会话', async () => {
     const h = await harness()
     const workspace = join(h.dir, 'socket-project')

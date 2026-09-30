@@ -438,6 +438,11 @@ export class SubAgentManager {
     for (const controller of this.#controllers.values()) controller.abort()
   }
 
+  /** 取消后等待后台子代理收尾，再关闭它们共享的观测出口。 */
+  async waitForIdle(): Promise<void> {
+    await Promise.allSettled([...this.#tasks.values()])
+  }
+
   async #run(
     session: SubAgentSession,
     signal: AbortSignal,

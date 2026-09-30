@@ -583,3 +583,74 @@ describe('ConfigStore provider bundle 原子写入', () => {
     expect(doc.model_profiles.map((item) => item.providerId)).toEqual(['p1'])
   })
 })
+
+describe('ConfigStore Langfuse 配置', () => {
+  it('凭据引用、启用状态、环境与版本往返，其他设置不受影响', async () => {
+    const { store, path } = await makeStore()
+    await store.initialize()
+    await store.update((doc) => ({ ...doc, app_settings: { language: 'zh' } }))
+    const langfuse = {
+      enabled: true,
+      baseUrl: 'https://example.com/',
+      publicKeyRef: { source: 'env' as const, key: 'MY_PUBLIC_KEY' },
+      secretKeyRef: { source: 'file' as const, key: '/tmp/langfuse-key' },
+      environment: 'test',
+      release: 'v2',
+    }
+    await store.setLangfuse(langfuse)
+    expect((await store.read()).langfuse).toEqual({ ...langfuse, baseUrl: 'https://example.com' })
+    const raw = await readRaw(path)
+    expect(raw['langfuse']).toEqual({ ...langfuse, baseUrl: 'https://example.com' })
+    expect((await store.read()).app_settings['language']).toBe('zh')
+  })
+
+  it('与模型凭据一致，明确配置的 value 引用只保留在全局配置', async () => {
+    const { store } = await makeStore()
+    await store.setLangfuse({
+      enabled: false,
+      baseUrl: 'http://localhost:3000',
+      publicKeyRef: { source: 'value', key: 'pk-lf-public' },
+      secretKeyRef: { source: 'value', key: 'sk-lf-local-secret' },
+    })
+    expect((await store.read()).langfuse).toMatchObject({
+      enabled: false,
+      secretKeyRef: { source: 'value', key: 'sk-lf-local-secret' },
+    })
+  })
+
+  it.each([
+    'not-a-url',
+    'file:///tmp/file',
+    'https://user:password@example.com',
+    'https://example.com?secret=x',
+    'https://example.com/api/public/otel/v1/traces',
+  ])('写入前拒绝非法地址：%s', async (baseUrl) => {
+    const { store } = await makeStore()
+    await store.initialize()
+    await expect(
+      store.setLangfuse({
+        enabled: true,
+        baseUrl,
+        publicKeyRef: { source: 'env', key: 'PUBLIC' },
+        secretKeyRef: { source: 'env', key: 'SECRET' },
+      }),
+    ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_FAILED })
+    expect((await store.read()).langfuse).toBeUndefined()
+  })
+
+  it('无效引用不会在读回时变成可启用配置', async () => {
+    const { store, path } = await makeStore()
+    await writeFile(
+      path,
+      JSON.stringify({
+        schema_version: 1,
+        langfuse: {
+          enabled: true,
+          publicKeyRef: { source: 'unknown', key: 'PUBLIC' },
+          secretKeyRef: { source: 'value', key: 'sk-lf-secret' },
+        },
+      }),
+    )
+    expect((await store.read()).langfuse).toBeUndefined()
+  })
+})
